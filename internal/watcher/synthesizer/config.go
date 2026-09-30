@@ -7,6 +7,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/diff"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -54,6 +55,8 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 	out = append(out, s.synthesizeXAIKeys(ctx)...)
 	// Meta API Keys
 	out = append(out, s.synthesizeMetaKeys(ctx)...)
+	// Qoder API Keys
+	out = append(out, s.synthesizeQoderKeys(ctx)...)
 	// OpenAI-compat
 	out = append(out, s.synthesizeOpenAICompat(ctx)...)
 	// Vertex-compat
@@ -214,6 +217,58 @@ func (s *ConfigSynthesizer) synthesizeXAIKeys(ctx *SynthesisContext) []*coreauth
 // synthesizeMetaKeys creates Auth entries for Meta API keys.
 func (s *ConfigSynthesizer) synthesizeMetaKeys(ctx *SynthesisContext) []*coreauth.Auth {
 	return s.synthesizeCodexStyleKeys(ctx, ctx.Config.MetaKey, "meta")
+}
+
+// synthesizeQoderKeys creates Auth entries for Qoder API keys.
+func (s *ConfigSynthesizer) synthesizeQoderKeys(ctx *SynthesisContext) []*coreauth.Auth {
+	cfg := ctx.Config
+	now := ctx.Now
+
+	// A disabled Qoder section must not produce credentials, otherwise the
+	// provider stays registered and keeps advertising its models.
+	if !cfg.Qoder.Enabled {
+		return nil
+	}
+
+	idGen := ctx.IDGenerator
+
+	out := make([]*coreauth.Auth, 0, len(cfg.Qoder.Keys))
+	for i := range cfg.Qoder.Keys {
+		qk := cfg.Qoder.Keys[i]
+		name := strings.TrimSpace(qk.Name)
+		if name == "" {
+			continue
+		}
+		token := strings.TrimSpace(qk.Token)
+		// An unset backend defaults to the global CLI, which authenticates via
+		// the `qodercli login` session. The CN backend needs a Personal Access
+		// Token and a separate binary, so it is never assumed implicitly.
+		backend := strings.ToLower(strings.TrimSpace(qk.Backend))
+		if backend == "" {
+			backend = registry.QoderBackendGlobal
+		}
+		id, idToken := idGen.Next("qoder:apikey", token, backend, name)
+		attrs := map[string]string{
+			"source":       fmt.Sprintf("config:qoder[%s]", idToken),
+			"config_index": strconv.Itoa(i),
+			"name":         name,
+			"backend":      backend,
+		}
+		if token != "" {
+			attrs["api_key"] = token
+		}
+		a := &coreauth.Auth{
+			ID:         id,
+			Provider:   "qoder",
+			Label:      "qoder",
+			Status:     coreauth.StatusActive,
+			Attributes: attrs,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}
+		out = append(out, a)
+	}
+	return out
 }
 
 func (s *ConfigSynthesizer) synthesizeCodexStyleKeys(ctx *SynthesisContext, entries []config.CodexKey, provider string) []*coreauth.Auth {

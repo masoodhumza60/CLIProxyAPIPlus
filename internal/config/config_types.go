@@ -887,12 +887,14 @@ func (m OpenAICompatibilityModel) GetUseMaxCompletionTokens() bool { return m.Us
 func (m OpenAICompatibilityModel) GetThinking() *registry.ThinkingSupport { return m.Thinking }
 
 // QoderKey represents the configuration for a Qoder API key.
+// The Qoder provider is reached through a local CLI subprocess rather than an
+// HTTP endpoint, so there is no header surface: only credentials, the backend
+// selection, and an optional model allow-list are configurable.
 type QoderKey struct {
-	Name    string            `yaml:"name"`
-	Token   string            `yaml:"token"`
-	Backend string            `yaml:"backend"`
-	Models  []string          `yaml:"models"`
-	Headers map[string]string `yaml:"headers"`
+	Name    string   `yaml:"name"`
+	Token   string   `yaml:"token"`
+	Backend string   `yaml:"backend"`
+	Models  []string `yaml:"models"`
 }
 
 // QoderConfig configures provider-wide Qoder request behavior.

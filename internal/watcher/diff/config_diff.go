@@ -406,6 +406,33 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 		}
 	}
 
+	// Qoder keys (do not print key material)
+	if oldCfg.Qoder.Enabled != newCfg.Qoder.Enabled {
+		changes = append(changes, fmt.Sprintf("qoder.enabled: %t -> %t", oldCfg.Qoder.Enabled, newCfg.Qoder.Enabled))
+	}
+	if len(oldCfg.Qoder.Keys) != len(newCfg.Qoder.Keys) {
+		changes = append(changes, fmt.Sprintf("qoder key count: %d -> %d", len(oldCfg.Qoder.Keys), len(newCfg.Qoder.Keys)))
+	} else {
+		for i := range oldCfg.Qoder.Keys {
+			o := oldCfg.Qoder.Keys[i]
+			n := newCfg.Qoder.Keys[i]
+			if strings.TrimSpace(o.Name) != strings.TrimSpace(n.Name) {
+				changes = append(changes, fmt.Sprintf("qoder[%d].name: %s -> %s", i, strings.TrimSpace(o.Name), strings.TrimSpace(n.Name)))
+			}
+			if strings.TrimSpace(o.Backend) != strings.TrimSpace(n.Backend) {
+				changes = append(changes, fmt.Sprintf("qoder[%d].backend: %s -> %s", i, strings.TrimSpace(o.Backend), strings.TrimSpace(n.Backend)))
+			}
+			if strings.TrimSpace(o.Token) != strings.TrimSpace(n.Token) {
+				changes = append(changes, fmt.Sprintf("qoder[%d].token: updated", i))
+			}
+			oldModels := SummarizeExcludedModels(o.Models)
+			newModels := SummarizeExcludedModels(n.Models)
+			if oldModels.hash != newModels.hash {
+				changes = append(changes, fmt.Sprintf("qoder[%d].models: updated (%d -> %d entries)", i, oldModels.count, newModels.count))
+			}
+		}
+	}
+
 	// Meta keys (do not print key material)
 	if len(oldCfg.MetaKey) != len(newCfg.MetaKey) {
 		changes = append(changes, fmt.Sprintf("meta-api-key count: %d -> %d", len(oldCfg.MetaKey), len(newCfg.MetaKey)))

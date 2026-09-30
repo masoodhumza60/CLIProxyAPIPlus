@@ -1007,17 +1007,16 @@ qoder:
   # Each key spawns a Qoder CLI subprocess (qoderclicn for CN backend, qodercli for global).
   # CN backend uses a Personal Access Token (PAT).
   # Global backend uses OAuth (run `qodercli login` first to authenticate).
+  # Models are discovered at runtime via `qodercli --list-models`; nothing needs to be listed here.
   qoder-api-key:
     - name: "my-qoder-key"
       # For CN backend: your Qoder Personal Access Token.
       # For Global backend: leave empty (uses OAuth from `qodercli login`).
       token: "your-qoder-pat-token"
-      # Backend: "cn" (default) or "global".
-      backend: "cn"
+      # Backend: "global" (default) or "cn".
+      backend: "global"
       # Optional: restrict this key to specific models.
+      # Use the exact IDs reported by `qodercli --list-models` for your account.
       # models:
-      #   - "qoder-cn"
-      #   - "auto"
-      # Optional: custom headers to include in requests.
-      # headers:
-      #   X-Custom-Header: "custom-value"
+      #   - "Qwen3.8-Max"
+      #   - "Qwen3.8-Flash"

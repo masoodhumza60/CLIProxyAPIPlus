@@ -212,6 +212,7 @@ func baselineExecutorAuths() []*coreauth.Auth {
 		"devin",
 		"meta",
 		"openai-compatibility",
+		"qoder",
 	}
 	auths := make([]*coreauth.Auth, 0, len(providers))
 	for _, provider := range providers {

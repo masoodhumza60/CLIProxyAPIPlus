@@ -9,6 +9,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelconfig"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
@@ -176,6 +177,22 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 			if authKind == "apikey" {
 				excluded = entry.ExcludedModels
 			}
+		}
+		models = applyExcludedModels(models, excluded)
+	case "qoder":
+		entry := s.resolveConfigQoderKey(a)
+		backend := ""
+		if entry != nil {
+			backend = entry.Backend
+		} else if a != nil && a.Attributes != nil {
+			backend = a.Attributes["backend"]
+		}
+		// Model availability is account-specific, so discover it from the CLI
+		// rather than assuming a fixed catalogue. Discovery is cached per
+		// backend and falls back to the last known good list on failure.
+		models = executor.DiscoverQoderModels(ctx, backend)
+		if entry != nil && len(entry.Models) > 0 {
+			models = buildQoderConfigModels(entry, models)
 		}
 		models = applyExcludedModels(models, excluded)
 	default:
@@ -525,6 +542,60 @@ func (s *Service) resolveConfigMetaKey(auth *coreauth.Auth) *config.MetaKey {
 		return nil
 	}
 	return resolveConfigCodexStyleKey(auth, s.cfg.MetaKey, false)
+}
+
+func (s *Service) resolveConfigQoderKey(auth *coreauth.Auth) *config.QoderKey {
+	if auth == nil || s.cfg == nil {
+		return nil
+	}
+	if entry := configEntryForAuthIndex(auth, s.cfg.Qoder.Keys); entry != nil {
+		return entry
+	}
+	// Fall back to matching on credentials carried in auth attributes. The Qoder
+	// synthesizer writes the backend under "backend" (not "base_url") and the
+	// token under "api_key", so compare against those.
+	var attrKey, attrBackend string
+	if auth.Attributes != nil {
+		attrKey = strings.TrimSpace(auth.Attributes["api_key"])
+		attrBackend = strings.ToLower(strings.TrimSpace(auth.Attributes["backend"]))
+	}
+	for i := range s.cfg.Qoder.Keys {
+		entry := &s.cfg.Qoder.Keys[i]
+		cfgKey := strings.TrimSpace(entry.Token)
+		cfgBackend := registry.NormalizeQoderBackend(entry.Backend)
+		if attrKey != "" && cfgKey != "" && strings.EqualFold(cfgKey, attrKey) {
+			if attrBackend == "" || cfgBackend == attrBackend {
+				return entry
+			}
+			continue
+		}
+		if attrKey == "" && attrBackend != "" && cfgBackend == attrBackend {
+			return entry
+		}
+	}
+	return nil
+}
+
+// buildQoderConfigModels narrows an already backend-scoped model list using the
+// optional `models:` allow-list on a Qoder key.
+func buildQoderConfigModels(entry *config.QoderKey, models []*ModelInfo) []*ModelInfo {
+	if entry == nil {
+		return nil
+	}
+	if len(entry.Models) == 0 {
+		return models
+	}
+	configured := make(map[string]struct{}, len(entry.Models))
+	for _, m := range entry.Models {
+		configured[strings.ToLower(strings.TrimSpace(m))] = struct{}{}
+	}
+	filtered := make([]*ModelInfo, 0, len(configured))
+	for _, model := range models {
+		if _, ok := configured[strings.ToLower(model.ID)]; ok {
+			filtered = append(filtered, model)
+		}
+	}
+	return filtered
 }
 
 func resolveConfigCodexStyleKey(auth *coreauth.Auth, entries []config.CodexKey, validateIndexCredentials bool) *config.CodexKey {

@@ -34,6 +34,8 @@ type VertexCompatModel = internalconfig.VertexCompatModel
 type OpenAICompatibility = internalconfig.OpenAICompatibility
 type OpenAICompatibilityAPIKey = internalconfig.OpenAICompatibilityAPIKey
 type OpenAICompatibilityModel = internalconfig.OpenAICompatibilityModel
+type QoderKey = internalconfig.QoderKey
+type QoderConfig = internalconfig.QoderConfig
 
 type TLS = internalconfig.TLSConfig
 
