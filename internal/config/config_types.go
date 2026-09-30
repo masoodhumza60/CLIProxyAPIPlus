@@ -885,3 +885,18 @@ func (m OpenAICompatibilityModel) GetIsCompat() bool               { return m.Is
 func (m OpenAICompatibilityModel) GetUseMaxCompletionTokens() bool { return m.UseMaxCompletionTokens }
 
 func (m OpenAICompatibilityModel) GetThinking() *registry.ThinkingSupport { return m.Thinking }
+
+// QoderKey represents the configuration for a Qoder API key.
+type QoderKey struct {
+	Name    string            `yaml:"name"`
+	Token   string            `yaml:"token"`
+	Backend string            `yaml:"backend"`
+	Models  []string          `yaml:"models"`
+	Headers map[string]string `yaml:"headers"`
+}
+
+// QoderConfig configures provider-wide Qoder request behavior.
+type QoderConfig struct {
+	Enabled bool       `yaml:"enabled"`
+	Keys    []QoderKey `yaml:"qoder-api-key"`
+}

@@ -35,6 +35,7 @@ type staticModelsJSON struct {
 	XAI         []*ModelInfo `json:"xai"`
 	Devin       []*ModelInfo `json:"devin"`
 	Meta        []*ModelInfo `json:"meta"`
+	Qoder       []*ModelInfo `json:"qoder"`
 }
 
 // GetClaudeModels returns the standard Claude model definitions.
@@ -504,6 +505,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetDevinModels()
 	case "meta", "muse":
 		return GetMetaModels()
+	case "qoder":
+		return GetQoderModels()
 	default:
 		return nil
 	}
@@ -529,6 +532,124 @@ func GetMetaModels() []*ModelInfo {
 	return cloneModelInfos(getModels().Meta)
 }
 
+// GetQoderModels returns the standard Qoder model definitions.
+func GetQoderModels() []*ModelInfo {
+	return cloneModelInfos(staticQoderModels)
+}
+
+var staticQoderModels = []*ModelInfo{
+	{
+		ID:                  "qoder-cn",
+		Type:                "qoder",
+		OwnedBy:             "qoder",
+		DisplayName:         "Qoder CN",
+		ContextLength:       262144,
+		MaxCompletionTokens: 64000,
+		Thinking: &ThinkingSupport{
+			Levels: []string{"none", "high"},
+		},
+	},
+	{
+		ID:                  "auto",
+		Type:                "qoder",
+		OwnedBy:             "qoder",
+		DisplayName:         "Auto",
+		ContextLength:       262144,
+		MaxCompletionTokens: 64000,
+		Thinking: &ThinkingSupport{
+			Levels: []string{"none", "high"},
+		},
+	},
+	{
+		ID:                  "qwen3.7-max",
+		Type:                "qoder",
+		OwnedBy:             "qoder",
+		DisplayName:         "Qwen 3.7 Max",
+		ContextLength:       262144,
+		MaxCompletionTokens: 64000,
+		Thinking: &ThinkingSupport{
+			Levels: []string{"none", "high"},
+		},
+	},
+	{
+		ID:                  "glm-5.1",
+		Type:                "qoder",
+		OwnedBy:             "qoder",
+		DisplayName:         "GLM-5.1",
+		ContextLength:       262144,
+		MaxCompletionTokens: 64000,
+		Thinking: &ThinkingSupport{
+			Levels: []string{"none", "high"},
+		},
+	},
+	{
+		ID:                  "glm-5.2",
+		Type:                "qoder",
+		OwnedBy:             "qoder",
+		DisplayName:         "GLM-5.2",
+		ContextLength:       262144,
+		MaxCompletionTokens: 64000,
+		Thinking: &ThinkingSupport{
+			Levels: []string{"none", "high"},
+		},
+	},
+	{
+		ID:                  "kimi-k2.6",
+		Type:                "qoder",
+		OwnedBy:             "qoder",
+		DisplayName:         "Kimi K2.6",
+		ContextLength:       262144,
+		MaxCompletionTokens: 64000,
+		Thinking: &ThinkingSupport{
+			Levels: []string{"none", "high"},
+		},
+	},
+	{
+		ID:                  "qwen3.6-plus",
+		Type:                "qoder",
+		OwnedBy:             "qoder",
+		DisplayName:         "Qwen 3.6 Plus",
+		ContextLength:       262144,
+		MaxCompletionTokens: 64000,
+		Thinking: &ThinkingSupport{
+			Levels: []string{"none", "high"},
+		},
+	},
+	{
+		ID:                  "qwen3.6-flash",
+		Type:                "qoder",
+		OwnedBy:             "qoder",
+		DisplayName:         "Qwen 3.6 Flash",
+		ContextLength:       262144,
+		MaxCompletionTokens: 64000,
+		Thinking: &ThinkingSupport{
+			Levels: []string{"none", "high"},
+		},
+	},
+	{
+		ID:                  "deepseek-v4-pro",
+		Type:                "qoder",
+		OwnedBy:             "qoder",
+		DisplayName:         "DeepSeek V4 Pro",
+		ContextLength:       262144,
+		MaxCompletionTokens: 64000,
+		Thinking: &ThinkingSupport{
+			Levels: []string{"none", "high"},
+		},
+	},
+	{
+		ID:                  "deepseek-v4-flash",
+		Type:                "qoder",
+		OwnedBy:             "qoder",
+		DisplayName:         "DeepSeek V4 Flash",
+		ContextLength:       262144,
+		MaxCompletionTokens: 64000,
+		Thinking: &ThinkingSupport{
+			Levels: []string{"none", "high"},
+		},
+	},
+}
+
 // LookupStaticModelInfo searches all static model definitions for a model by ID.
 // Returns nil if no matching model is found.
 func LookupStaticModelInfo(modelID string) *ModelInfo {
@@ -549,6 +670,7 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		data.Devin,
 		staticDevinModels,
 		data.Meta,
+		staticQoderModels,
 	}
 	for _, models := range allModels {
 		for _, m := range models {

@@ -998,3 +998,26 @@ nonstream-keepalive-interval: 0
 #         - 'tools.#(name=="apply_patch")'
 #         # Nested additional_tools structure in input[] (Codex CLI >= 0.154 "Responses Lite"):
 #         - 'input.#(type=="additional_tools")#.tools.#(name=="functions")#.tools.#(name=="apply_patch")#'
+
+# Qoder provider behavior.
+qoder:
+  # Enable or disable the Qoder provider.
+  enabled: true
+  # Qoder API keys.
+  # Each key spawns a Qoder CLI subprocess (qoderclicn for CN backend, qodercli for global).
+  # CN backend uses a Personal Access Token (PAT).
+  # Global backend uses OAuth (run `qodercli login` first to authenticate).
+  qoder-api-key:
+    - name: "my-qoder-key"
+      # For CN backend: your Qoder Personal Access Token.
+      # For Global backend: leave empty (uses OAuth from `qodercli login`).
+      token: "your-qoder-pat-token"
+      # Backend: "cn" (default) or "global".
+      backend: "cn"
+      # Optional: restrict this key to specific models.
+      # models:
+      #   - "qoder-cn"
+      #   - "auto"
+      # Optional: custom headers to include in requests.
+      # headers:
+      #   X-Custom-Header: "custom-value"

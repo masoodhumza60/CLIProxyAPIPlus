@@ -183,4 +183,7 @@ type Config struct {
 
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
+
+	// Qoder configures provider-wide Qoder request behavior.
+	Qoder QoderConfig `yaml:"qoder" json:"qoder"`
 }
