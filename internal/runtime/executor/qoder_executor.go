@@ -2,9 +2,10 @@ package executor
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"time"
@@ -12,6 +13,13 @@ import (
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+)
+
+const (
+	// qoderCLIResponseTimeout is the max time to wait for a CLI response.
+	qoderCLIResponseTimeout = 30 * time.Second
+	// qoderCLISpawnTimeout is the max time to wait for CLI to start.
+	qoderCLISpawnTimeout = 10 * time.Second
 )
 
 // QoderExecutor spawns and manages Qoder CLI subprocesses.
@@ -58,8 +66,24 @@ func (e *QoderExecutor) spawnCLI(sessionID string, key config.QoderKey) (*QoderS
 		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
 	}
 
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
+
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start CLI: %w", err)
+	}
+
+	// Wait briefly to ensure the process doesn't exit immediately.
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		return nil, fmt.Errorf("CLI exited immediately: %w (stderr: %s)", err, stderrBuf.String())
+	case <-time.After(100 * time.Millisecond):
+		// CLI is still running, good.
+	case <-time.After(qoderCLISpawnTimeout):
+		_ = cmd.Process.Kill()
+		return nil, fmt.Errorf("CLI spawn timeout")
 	}
 
 	session := &QoderSession{
@@ -79,9 +103,8 @@ func (e *QoderExecutor) killCLI(session *QoderSession) error {
 	if session.Cmd == nil {
 		return nil
 	}
-	cmd := session.Cmd.(*exec.Cmd)
-	if cmd.Process != nil {
-		return cmd.Process.Kill()
+	if session.Cmd.Process != nil {
+		return session.Cmd.Process.Kill()
 	}
 	return nil
 }
@@ -111,9 +134,16 @@ func (e *QoderExecutor) ExecutePlugin(ctx context.Context, req pluginapi.Executo
 		e.store.Put(sessionID, session)
 	}
 
-	session.LastUsedAt = time.Now()
+	e.store.UpdateLastUsed(sessionID)
 
-	stdin := session.Stdin.(io.WriteCloser)
+	// Check if the CLI process is still alive.
+	if session.Cmd.ProcessState != nil {
+		// Process has exited, remove the stale session.
+		e.store.Delete(sessionID)
+		return pluginapi.ExecutorResponse{}, fmt.Errorf("CLI process has exited, session removed")
+	}
+
+	stdin := session.Stdin
 	if _, err := stdin.Write(req.Payload); err != nil {
 		return pluginapi.ExecutorResponse{}, fmt.Errorf("failed to write to CLI: %w", err)
 	}
@@ -121,11 +151,42 @@ func (e *QoderExecutor) ExecutePlugin(ctx context.Context, req pluginapi.Executo
 		return pluginapi.ExecutorResponse{}, fmt.Errorf("failed to write newline: %w", err)
 	}
 
-	stdout := session.Stdout.(io.ReadCloser)
+	// Read response with context cancellation and timeout support.
+	stdout := session.Stdout
 	reader := bufio.NewReader(stdout)
-	line, err := reader.ReadBytes('\n')
-	if err != nil {
-		return pluginapi.ExecutorResponse{}, fmt.Errorf("failed to read from CLI: %w", err)
+
+	type readResult struct {
+		line []byte
+		err  error
+	}
+	resultCh := make(chan readResult, 1)
+	go func() {
+		line, err := reader.ReadBytes('\n')
+		resultCh <- readResult{line: line, err: err}
+	}()
+
+	var line []byte
+	select {
+	case <-ctx.Done():
+		return pluginapi.ExecutorResponse{}, fmt.Errorf("context cancelled: %w", ctx.Err())
+	case <-time.After(qoderCLIResponseTimeout):
+		return pluginapi.ExecutorResponse{}, fmt.Errorf("CLI response timeout after %s", qoderCLIResponseTimeout)
+	case res := <-resultCh:
+		if res.err != nil {
+			return pluginapi.ExecutorResponse{}, fmt.Errorf("failed to read from CLI: %w", res.err)
+		}
+		line = res.line
+	}
+
+	// Validate JSON output.
+	var raw map[string]interface{}
+	if err := json.Unmarshal(line, &raw); err != nil {
+		return pluginapi.ExecutorResponse{}, fmt.Errorf("invalid JSON from CLI: %w", err)
+	}
+
+	// Check for error field in response.
+	if errMsg, ok := raw["error"].(string); ok && errMsg != "" {
+		return pluginapi.ExecutorResponse{}, fmt.Errorf("CLI error: %s", errMsg)
 	}
 
 	return pluginapi.ExecutorResponse{

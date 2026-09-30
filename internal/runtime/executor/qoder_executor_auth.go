@@ -5,14 +5,10 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
-
-// ensure config import is used
-var _ = config.QoderKey{}
 
 // Execute performs a non-streaming request through the Qoder CLI.
 // This implements the auth.ProviderExecutor interface.
