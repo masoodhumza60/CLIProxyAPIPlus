@@ -506,7 +506,9 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 	case "meta", "muse":
 		return GetMetaModels()
 	case "qoder":
-		return GetQoderModels()
+		// Qoder models are discovered from the CLI at runtime, so there is no
+		// static catalogue to fall back to.
+		return nil
 	default:
 		return nil
 	}
@@ -532,122 +534,59 @@ func GetMetaModels() []*ModelInfo {
 	return cloneModelInfos(getModels().Meta)
 }
 
-// GetQoderModels returns the standard Qoder model definitions.
-func GetQoderModels() []*ModelInfo {
-	return cloneModelInfos(staticQoderModels)
+// Qoder models are not defined statically: the available set is account-specific
+// and is discovered at runtime via `<qoder-cli> --list-models`. See
+// internal/runtime/executor/qoder_models.go.
+
+// Qoder backend identifiers. The CN backend talks to qoder.com.cn via the
+// `qoderclicn` binary; the global backend talks to qoder.com via `qodercli`.
+const (
+	QoderBackendCN     = "cn"
+	QoderBackendGlobal = "global"
+)
+
+// NormalizeQoderBackend canonicalizes a configured Qoder backend value.
+// An empty value defaults to the CN backend. Unknown values are returned
+// lowercased and trimmed so callers can reject them explicitly.
+func NormalizeQoderBackend(backend string) string {
+	normalized := strings.ToLower(strings.TrimSpace(backend))
+	if normalized == "" {
+		return QoderBackendCN
+	}
+	return normalized
 }
 
-var staticQoderModels = []*ModelInfo{
-	{
-		ID:                  "qoder-cn",
-		Type:                "qoder",
-		OwnedBy:             "qoder",
-		DisplayName:         "Qoder CN",
-		ContextLength:       262144,
-		MaxCompletionTokens: 64000,
-		Thinking: &ThinkingSupport{
-			Levels: []string{"none", "high"},
-		},
-	},
-	{
-		ID:                  "auto",
-		Type:                "qoder",
-		OwnedBy:             "qoder",
-		DisplayName:         "Auto",
-		ContextLength:       262144,
-		MaxCompletionTokens: 64000,
-		Thinking: &ThinkingSupport{
-			Levels: []string{"none", "high"},
-		},
-	},
-	{
-		ID:                  "qwen3.7-max",
-		Type:                "qoder",
-		OwnedBy:             "qoder",
-		DisplayName:         "Qwen 3.7 Max",
-		ContextLength:       262144,
-		MaxCompletionTokens: 64000,
-		Thinking: &ThinkingSupport{
-			Levels: []string{"none", "high"},
-		},
-	},
-	{
-		ID:                  "glm-5.1",
-		Type:                "qoder",
-		OwnedBy:             "qoder",
-		DisplayName:         "GLM-5.1",
-		ContextLength:       262144,
-		MaxCompletionTokens: 64000,
-		Thinking: &ThinkingSupport{
-			Levels: []string{"none", "high"},
-		},
-	},
-	{
-		ID:                  "glm-5.2",
-		Type:                "qoder",
-		OwnedBy:             "qoder",
-		DisplayName:         "GLM-5.2",
-		ContextLength:       262144,
-		MaxCompletionTokens: 64000,
-		Thinking: &ThinkingSupport{
-			Levels: []string{"none", "high"},
-		},
-	},
-	{
-		ID:                  "kimi-k2.6",
-		Type:                "qoder",
-		OwnedBy:             "qoder",
-		DisplayName:         "Kimi K2.6",
-		ContextLength:       262144,
-		MaxCompletionTokens: 64000,
-		Thinking: &ThinkingSupport{
-			Levels: []string{"none", "high"},
-		},
-	},
-	{
-		ID:                  "qwen3.6-plus",
-		Type:                "qoder",
-		OwnedBy:             "qoder",
-		DisplayName:         "Qwen 3.6 Plus",
-		ContextLength:       262144,
-		MaxCompletionTokens: 64000,
-		Thinking: &ThinkingSupport{
-			Levels: []string{"none", "high"},
-		},
-	},
-	{
-		ID:                  "qwen3.6-flash",
-		Type:                "qoder",
-		OwnedBy:             "qoder",
-		DisplayName:         "Qwen 3.6 Flash",
-		ContextLength:       262144,
-		MaxCompletionTokens: 64000,
-		Thinking: &ThinkingSupport{
-			Levels: []string{"none", "high"},
-		},
-	},
-	{
-		ID:                  "deepseek-v4-pro",
-		Type:                "qoder",
-		OwnedBy:             "qoder",
-		DisplayName:         "DeepSeek V4 Pro",
-		ContextLength:       262144,
-		MaxCompletionTokens: 64000,
-		Thinking: &ThinkingSupport{
-			Levels: []string{"none", "high"},
-		},
-	},
-	{
-		ID:                  "deepseek-v4-flash",
-		Type:                "qoder",
-		OwnedBy:             "qoder",
-		DisplayName:         "DeepSeek V4 Flash",
-		ContextLength:       262144,
-		MaxCompletionTokens: 64000,
-		Thinking: &ThinkingSupport{
-			Levels: []string{"none", "high"},
-		},
-	},
+// IsValidQoderBackend reports whether backend is one of the supported values.
+func IsValidQoderBackend(backend string) bool {
+	switch NormalizeQoderBackend(backend) {
+	case QoderBackendCN, QoderBackendGlobal:
+		return true
+	default:
+		return false
+	}
+}
+
+// qoderModelBackends maps a Qoder model ID to the backends that can serve it.
+// The `qoder-cn` model is only reachable through the China backend; every other
+// Qoder model is offered by both backends.
+var qoderModelBackends = map[string][]string{
+	"qoder-cn": {QoderBackendCN},
+}
+
+// QoderModelSupportsBackend reports whether a Qoder model ID is available on
+// the given backend. Models with no region restriction are supported everywhere.
+func QoderModelSupportsBackend(modelID, backend string) bool {
+	allowed, ok := qoderModelBackends[strings.ToLower(modelID)]
+	if !ok {
+		return true
+	}
+	target := NormalizeQoderBackend(backend)
+	for _, candidate := range allowed {
+		if candidate == target {
+			return true
+		}
+	}
+	return false
 }
 
 // LookupStaticModelInfo searches all static model definitions for a model by ID.
@@ -670,7 +609,6 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		data.Devin,
 		staticDevinModels,
 		data.Meta,
-		staticQoderModels,
 	}
 	for _, models := range allModels {
 		for _, m := range models {
