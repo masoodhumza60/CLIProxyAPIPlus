@@ -80,9 +80,11 @@ func (a *FreebuffAuthenticator) Login(ctx context.Context, cfg *config.Config, o
 		return nil, err
 	}
 
-	// The client is built without a token: the login endpoints are reached
-	// before a credential exists.
-	client, err := freebuff.NewClient(baseURL, "", freebuff.Options{})
+	// The login endpoints are reached before a credential exists, so this uses
+	// the constructor that permits an empty key. NewClient deliberately rejects
+	// one, because an authenticated client with no key would send an empty
+	// bearer token, which reads as a rejected credential rather than a mistake.
+	client, err := freebuff.NewLoginClient(baseURL, freebuff.Options{})
 	if err != nil {
 		return nil, fmt.Errorf("freebuff: %w", err)
 	}
