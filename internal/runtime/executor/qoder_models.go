@@ -147,7 +147,12 @@ func listQoderModels(ctx context.Context, backend string) ([]*registry.ModelInfo
 }
 
 // qoderModelListTimeout bounds model discovery, which is credential acquisition.
-const qoderModelListTimeout = 20 * time.Second
+//
+// The CLI needs roughly ten seconds to answer on its own, and the server is
+// doing concurrent network work at startup, so a tighter deadline kills the
+// child mid-call. A killed child on Windows surfaces as a bare "exit status 1"
+// with empty stderr, which reads like a CLI failure rather than a timeout.
+const qoderModelListTimeout = 90 * time.Second
 
 // qoderMaxErrorLog bounds how much of a failing CLI's stderr is carried into an
 // error message, so a chatty CLI cannot flood the log.

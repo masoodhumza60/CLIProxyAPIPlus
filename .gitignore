@@ -83,3 +83,6 @@ docker-compose.override.yml
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+
+# Local integration-test harness. It holds a personal Freebuff credential.
+/test-mock/
