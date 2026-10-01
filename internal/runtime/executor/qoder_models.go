@@ -2,6 +2,7 @@ package executor
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -53,6 +54,16 @@ type qoderModelCacheEntry struct {
 var (
 	qoderModelCacheMu sync.Mutex
 	qoderModelCache   = map[string]qoderModelCacheEntry{}
+
+	// qoderDiscoveryMu serializes the CLI invocation itself, so only one
+	// discovery shells out at a time. The cache lock cannot cover the subprocess
+	// call without also blocking cache readers, and leaving it out lets two
+	// callers miss the cache and race. The CLI does not reliably answer two
+	// simultaneous invocations: the loser exits non-zero with no output and
+	// returns an empty list, which would wipe out the winner's models. Callers
+	// re-check the cache after acquiring this, so a waiter gets the winner's
+	// result instead of running the CLI a second time.
+	qoderDiscoveryMu sync.Mutex
 )
 
 // ParseQoderModelList parses the output of `<qoder-cli> --list-models`.
@@ -117,9 +128,15 @@ func listQoderModels(ctx context.Context, backend string) ([]*registry.ModelInfo
 	listCtx, cancel := context.WithTimeout(ctx, qoderModelListTimeout)
 	defer cancel()
 
-	output, err := exec.CommandContext(listCtx, resolved, "--list-models").Output()
+	// stderr is captured rather than discarded: when the CLI refuses, the
+	// reason is only ever on stderr, and a bare "exit status 1" is useless.
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(listCtx, resolved, "--list-models")
+	cmd.Stderr = &stderr
+	output, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("qoder CLI %q --list-models failed: %w", binary, err)
+		return nil, fmt.Errorf("qoder CLI %q --list-models failed: %w (stderr: %s)",
+			binary, err, qoderTruncateForError(stderr.String()))
 	}
 
 	names := ParseQoderModelList(string(output))
@@ -132,6 +149,19 @@ func listQoderModels(ctx context.Context, backend string) ([]*registry.ModelInfo
 // qoderModelListTimeout bounds model discovery, which is credential acquisition.
 const qoderModelListTimeout = 20 * time.Second
 
+// qoderMaxErrorLog bounds how much of a failing CLI's stderr is carried into an
+// error message, so a chatty CLI cannot flood the log.
+const qoderMaxErrorLog = 512
+
+// qoderTruncateForError bounds a captured stderr string for use in an error.
+func qoderTruncateForError(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= qoderMaxErrorLog {
+		return s
+	}
+	return s[:qoderMaxErrorLog] + "... (truncated)"
+}
+
 // DiscoverQoderModels returns the models available on a backend, querying the
 // CLI at most once per cache TTL. Results are cached per backend so model
 // registration does not shell out on every config reload.
@@ -140,6 +170,19 @@ func DiscoverQoderModels(ctx context.Context, backend string) []*registry.ModelI
 
 	qoderModelCacheMu.Lock()
 	entry, ok := qoderModelCache[normalized]
+	if ok && time.Since(entry.fetchedAt) < qoderModelCacheTTL {
+		qoderModelCacheMu.Unlock()
+		return cloneQoderModels(entry.models)
+	}
+	qoderModelCacheMu.Unlock()
+
+	qoderDiscoveryMu.Lock()
+	defer qoderDiscoveryMu.Unlock()
+
+	// Re-read the cache now that the discovery lock is held: a caller that was
+	// waiting here may have populated it while this one was reading above.
+	qoderModelCacheMu.Lock()
+	entry, ok = qoderModelCache[normalized]
 	if ok && time.Since(entry.fetchedAt) < qoderModelCacheTTL {
 		qoderModelCacheMu.Unlock()
 		return cloneQoderModels(entry.models)
