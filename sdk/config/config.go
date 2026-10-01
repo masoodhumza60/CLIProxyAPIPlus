@@ -36,6 +36,8 @@ type OpenAICompatibilityAPIKey = internalconfig.OpenAICompatibilityAPIKey
 type OpenAICompatibilityModel = internalconfig.OpenAICompatibilityModel
 type QoderKey = internalconfig.QoderKey
 type QoderConfig = internalconfig.QoderConfig
+type FreebuffKey = internalconfig.FreebuffKey
+type FreebuffConfig = internalconfig.FreebuffConfig
 
 type TLS = internalconfig.TLSConfig
 

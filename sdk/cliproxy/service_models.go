@@ -195,6 +195,18 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 			models = buildQoderConfigModels(entry, models)
 		}
 		models = applyExcludedModels(models, excluded)
+	case "freebuff":
+		// What an account may run is decided by the service and changes with its
+		// access tier, so the list is discovered rather than hardcoded. Reading
+		// it live is what keeps a model that has become locked off the list
+		// instead of advertising something that fails on first use.
+		entry := s.resolveConfigFreebuffKey(a)
+		apiKey, webBaseURL := freebuffCredentialFor(a)
+		models = executor.DiscoverFreebuffModels(ctx, s.cfg, apiKey, webBaseURL)
+		if entry != nil && len(entry.Models) > 0 {
+			models = buildFreebuffConfigModels(entry, models)
+		}
+		models = applyExcludedModels(models, excluded)
 	default:
 		// Handle OpenAI-compatibility providers by name using config
 		if s.cfg != nil {
@@ -574,6 +586,70 @@ func (s *Service) resolveConfigQoderKey(auth *coreauth.Auth) *config.QoderKey {
 		}
 	}
 	return nil
+}
+
+// freebuffCredentialFor extracts the token and the web endpoint from a
+// selected credential.
+//
+// The endpoint travels with the credential rather than the config so that an
+// operator cannot point this provider at an arbitrary host through a stray
+// config key; the only credential that exists is one a login produced or a
+// config entry created.
+func freebuffCredentialFor(a *coreauth.Auth) (apiKey, webBaseURL string) {
+	if a == nil {
+		return "", ""
+	}
+	if a.Attributes != nil {
+		apiKey = a.Attributes["api_key"]
+		webBaseURL = strings.TrimSpace(a.Attributes["base_url"])
+	}
+	if webBaseURL == "" {
+		webBaseURL = executor.FreebuffDefaultWebHost()
+	}
+	return apiKey, webBaseURL
+}
+
+// resolveConfigFreebuffKey finds the config entry a credential came from, so an
+// operator's per-key model allow-list can be applied to the discovered list.
+func (s *Service) resolveConfigFreebuffKey(a *coreauth.Auth) *config.FreebuffKey {
+	if a == nil || s.cfg == nil {
+		return nil
+	}
+	apiKey, _ := freebuffCredentialFor(a)
+	if apiKey != "" {
+		for i := range s.cfg.Freebuff.Keys {
+			if s.cfg.Freebuff.Keys[i].Token == apiKey {
+				return &s.cfg.Freebuff.Keys[i]
+			}
+		}
+	}
+	if entry := configEntryForAuthIndex(a, s.cfg.Freebuff.Keys); entry != nil {
+		return entry
+	}
+	return nil
+}
+
+// buildFreebuffConfigModels applies an operator's model allow-list to the
+// discovered list. The discovered list is the authority on what exists, so an
+// allow-list can only narrow it and can never introduce a model the account
+// cannot run.
+func buildFreebuffConfigModels(entry *config.FreebuffKey, models []*registry.ModelInfo) []*registry.ModelInfo {
+	if entry == nil || len(entry.Models) == 0 {
+		return models
+	}
+	allowed := make(map[string]bool, len(entry.Models))
+	for _, name := range entry.Models {
+		if trimmed := strings.TrimSpace(name); trimmed != "" {
+			allowed[strings.ToLower(trimmed)] = true
+		}
+	}
+	filtered := make([]*registry.ModelInfo, 0, len(allowed))
+	for _, model := range models {
+		if allowed[strings.ToLower(model.ID)] {
+			filtered = append(filtered, model)
+		}
+	}
+	return filtered
 }
 
 // buildQoderConfigModels narrows an already backend-scoped model list using the
