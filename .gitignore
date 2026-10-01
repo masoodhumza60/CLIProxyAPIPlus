@@ -86,3 +86,8 @@ docker-compose.override.yml
 
 # Local integration-test harness. It holds a personal Freebuff credential.
 /test-mock/
+
+# Desktop GUI build output (the GUI source itself is tracked under gui/).
+/gui/node_modules/
+/gui/dist/
+/gui/src-tauri/target/
