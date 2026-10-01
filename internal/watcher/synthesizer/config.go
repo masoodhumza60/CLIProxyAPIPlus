@@ -57,6 +57,7 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 	out = append(out, s.synthesizeMetaKeys(ctx)...)
 	// Qoder API Keys
 	out = append(out, s.synthesizeQoderKeys(ctx)...)
+	out = append(out, s.synthesizeFreebuffKeys(ctx)...)
 	// OpenAI-compat
 	out = append(out, s.synthesizeOpenAICompat(ctx)...)
 	// Vertex-compat
@@ -267,6 +268,56 @@ func (s *ConfigSynthesizer) synthesizeQoderKeys(ctx *SynthesisContext) []*coreau
 			UpdatedAt:  now,
 		}
 		out = append(out, a)
+	}
+	return out
+}
+
+// synthesizeFreebuffKeys turns `freebuff.freebuff-api-key` entries into
+// credentials. Tokens obtained through `freebuff login` are stored under
+// auths/ and arrive through the file synthesizer instead; this path exists so a
+// token can also be supplied directly in the config.
+func (s *ConfigSynthesizer) synthesizeFreebuffKeys(ctx *SynthesisContext) []*coreauth.Auth {
+	cfg := ctx.Config
+	now := ctx.Now
+
+	// A disabled section must not produce credentials, otherwise the provider
+	// stays registered and keeps advertising its models.
+	if !cfg.Freebuff.Enabled {
+		return nil
+	}
+
+	baseURL := strings.TrimSpace(cfg.Freebuff.BaseURL)
+	idGen := ctx.IDGenerator
+
+	out := make([]*coreauth.Auth, 0, len(cfg.Freebuff.Keys))
+	for i := range cfg.Freebuff.Keys {
+		fk := cfg.Freebuff.Keys[i]
+		name := strings.TrimSpace(fk.Name)
+		token := strings.TrimSpace(fk.Token)
+		if name == "" || token == "" {
+			continue
+		}
+		id, idToken := idGen.Next("freebuff:apikey", token, baseURL, name)
+		attrs := map[string]string{
+			"source":       fmt.Sprintf("config:freebuff[%s]", idToken),
+			"config_index": strconv.Itoa(i),
+			"name":         name,
+			"api_key":      token,
+		}
+		// The credential carries the endpoint so it stays usable even if the
+		// config section is edited out from under it.
+		if baseURL != "" {
+			attrs["base_url"] = baseURL
+		}
+		out = append(out, &coreauth.Auth{
+			ID:         id,
+			Provider:   "freebuff",
+			Label:      "freebuff",
+			Status:     coreauth.StatusActive,
+			Attributes: attrs,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		})
 	}
 	return out
 }

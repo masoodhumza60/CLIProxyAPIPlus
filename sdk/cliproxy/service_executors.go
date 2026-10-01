@@ -213,6 +213,7 @@ func baselineExecutorAuths() []*coreauth.Auth {
 		"meta",
 		"openai-compatibility",
 		"qoder",
+		"freebuff",
 	}
 	auths := make([]*coreauth.Auth, 0, len(providers))
 	for _, provider := range providers {
@@ -312,6 +313,13 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 		s.coreManager.RegisterExecutor(executor.NewMetaExecutor(cfg))
 	case "qoder":
 		s.coreManager.RegisterExecutor(executor.NewQoderExecutor(cfg))
+	case "freebuff":
+		// The Freebuff protocol client ships without an operator-configurable
+		// base URL: the production constructor leaves its client factory nil, so
+		// the only way this executor can reach anything is if a harness supplied
+		// a credential that already carries one. Requests therefore fail with 501
+		// rather than quietly talking to a host nobody chose.
+		s.coreManager.RegisterExecutor(executor.NewFreebuffExecutor(cfg))
 	default:
 		providerKey := strings.ToLower(strings.TrimSpace(a.Provider))
 		if providerKey == "" {

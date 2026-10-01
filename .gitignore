@@ -30,6 +30,10 @@ auths/*
 
 # Documentation
 docs/*
+# The Freebuff operator guide is tracked deliberately: it is the only place that
+# documents why the provider has no configurable endpoint and that its access
+# gates are reported rather than worked around.
+!docs/freebuff-protocol.md
 AGENTS.md
 CLAUDE.md
 GEMINI.md

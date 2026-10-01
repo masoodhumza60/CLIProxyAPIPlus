@@ -902,3 +902,34 @@ type QoderConfig struct {
 	Enabled bool       `yaml:"enabled"`
 	Keys    []QoderKey `yaml:"qoder-api-key"`
 }
+
+// FreebuffKey represents the configuration for one Freebuff credential.
+//
+// Token is a bearer token issued by the Freebuff/Codebuff login flow. Tokens
+// obtained through `freebuff login` are stored under auths/ and need no entry
+// here; this block exists so a token can also be supplied directly.
+type FreebuffKey struct {
+	Name   string   `yaml:"name"`
+	Token  string   `yaml:"token"`
+	Models []string `yaml:"models"`
+}
+
+// FreebuffConfig configures the Freebuff provider.
+//
+// BaseURL points at the Codebuff-compatible API root. It is required because
+// the client refuses to guess a default: the provider is reached over HTTP and
+// silently assuming an origin would make a misconfiguration look like an
+// upstream outage.
+type FreebuffConfig struct {
+	Enabled bool          `yaml:"enabled"`
+	BaseURL string        `yaml:"base-url"`
+	Keys    []FreebuffKey `yaml:"freebuff-api-key"`
+	// CatalogBaseURL points at the origin serving the model catalogue.
+	//
+	// It is separate from BaseURL because the two are different services: chat
+	// is served by the web application while the catalogue comes from the API
+	// host. Leaving it empty uses the documented catalogue origin; setting it
+	// lets a self-hosted deployment name its own, and no value is ever inferred
+	// from BaseURL.
+	CatalogBaseURL string `yaml:"catalog-base-url,omitempty"`
+}

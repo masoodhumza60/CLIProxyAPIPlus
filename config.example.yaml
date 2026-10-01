@@ -1020,3 +1020,32 @@ qoder:
       # models:
       #   - "Qwen3.8-Max"
       #   - "Qwen3.8-Flash"
+
+# Freebuff provider.
+#
+# Prefer `freebuff login`: it opens a browser, signs you in, and stores the
+# token under auths/. You only need `base-url` below, and no `freebuff-api-key`
+# entries at all. The key list exists for supplying a token directly.
+#
+# Note on access: Freebuff's terms of service restrict API access to the
+# official client, and the free tier is metered per person rather than per
+# account. Use this provider only if that is acceptable to you.
+freebuff:
+  # Enable or disable the Freebuff provider.
+  enabled: true
+  # The API root. Required: there is no default, so a missing or mistyped
+  # value fails with a clear error rather than dialling a guessed host.
+  # `freebuff login` reads this value.
+  #
+  # Freebuff is built on Codebuff, which is why the request envelope is called
+  # `codebuff_metadata` and the second auth header is `x-codebuff-api-key`. The
+  # host is still freebuff.com: the Freebuff CLI resolves its login origin to
+  # that literal when built for Freebuff.
+  base-url: "https://freebuff.com"
+  # Optional: tokens supplied directly instead of via `freebuff login`.
+  freebuff-api-key:
+    - name: "my-freebuff-key"
+      token: "your-freebuff-token"
+      # Optional: restrict this key to specific models.
+      # models:
+      #   - "deepseek/deepseek-v4-pro"

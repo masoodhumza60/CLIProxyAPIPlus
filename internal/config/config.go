@@ -186,4 +186,9 @@ type Config struct {
 
 	// Qoder configures provider-wide Qoder request behavior.
 	Qoder QoderConfig `yaml:"qoder" json:"qoder"`
+
+	// Freebuff configures the Freebuff provider. The base URL is required
+	// rather than defaulted: guessing an origin would turn a typo in the config
+	// into what looks like an upstream outage.
+	Freebuff FreebuffConfig `yaml:"freebuff" json:"freebuff"`
 }
