@@ -8,6 +8,9 @@ config.yaml
 
 # Generated content
 bin/*
+# Local release build output. The archives are published to a GitHub release,
+# so they are build products rather than sources.
+/dist/
 /logs
 conv/*
 temp/*
