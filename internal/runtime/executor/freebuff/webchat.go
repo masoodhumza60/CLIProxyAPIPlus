@@ -106,7 +106,16 @@ func (c *Client) ChatStream(ctx context.Context, req ChatRequest) (io.ReadCloser
 		return nil, fmt.Errorf("freebuff: encoding chat request: %w", err)
 	}
 
-	httpReq, err := c.newStreamRequest(ctx, ChatPath, payload)
+	// Admit (or resume) before streaming. The web host needs a session to
+	// attach the stream to; the cookie alone is not enough, and a request sent
+	// without one is refused with the same "session expired" that a stale
+	// cookie produces, which makes the two indistinguishable from the outside.
+	instanceID, err := c.ensureAdmittedSession(ctx, req.Model)
+	if err != nil {
+		return nil, err
+	}
+
+	httpReq, err := c.newStreamRequest(ctx, ChatPath, payload, instanceID)
 	if err != nil {
 		return nil, err
 	}
@@ -274,7 +283,7 @@ type threadResponse struct {
 // newStreamRequest builds a request for the web host, authenticated by the
 // session cookie the login flow obtained. It is separate from the JSON helper
 // because a streaming response must not be buffered by the caller.
-func (c *Client) newStreamRequest(ctx context.Context, path string, payload []byte) (*http.Request, error) {
+func (c *Client) newStreamRequest(ctx context.Context, path string, payload []byte, instanceID string) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, strings.NewReader(string(payload)))
 	if err != nil {
 		return nil, fmt.Errorf("freebuff: building %s request: %w", path, err)
@@ -287,7 +296,87 @@ func (c *Client) newStreamRequest(ctx context.Context, path string, payload []by
 	// the same token the CLI login returns is accepted in this cookie, so no
 	// browser automation or session scraping is involved.
 	req.AddCookie(&http.Cookie{Name: SessionCookie, Value: c.apiKey})
+	// The instance id names the admitted session this stream belongs to. Without
+	// it the host has no session to attach the request to and reports the same
+	// "session expired" that an absent cookie does, which is why a request built
+	// before admission and one built after can fail identically.
+	if strings.TrimSpace(instanceID) != "" {
+		req.Header.Set(headerInstance, instanceID)
+	}
 	return req, nil
+}
+
+// ensureAdmittedSession makes sure the account holds a live session for model
+// and returns the instance id to present with the stream.
+//
+// The web host does not authenticate a stream on the cookie alone. A session has
+// to be admitted first, and holding one is metered, so an existing session is
+// resumed rather than a new one taken for every turn.
+//
+// A gate is reported, never routed around: country_blocked, spend_limited and the
+// rest are the service deciding what this account may do, and the only honest
+// response to one is to say so.
+func (c *Client) ensureAdmittedSession(ctx context.Context, model string) (string, error) {
+	admission := NewSessionAdmission(c)
+
+	if held := recallSession(c.apiKey, model); held != "" {
+		state, err := admission.Reuse(ctx, held, model)
+		if err == nil && state != nil && state.Status == StatusActive && state.InstanceID != "" {
+			rememberSession(c.apiKey, state.InstanceID, model)
+			return state.InstanceID, nil
+		}
+		// Any refusal means the held session is spent or gone. Drop it so the
+		// next request admits afresh instead of retrying a dead instance.
+		forgetSession(c.apiKey)
+	}
+
+	state, err := admission.Admit(ctx, AdmissionRequest{Model: model})
+	if err != nil {
+		// A server with no admission route predates the guarantee. Streaming
+		// without a session is the older behaviour and still worth attempting,
+		// so this is a downgrade rather than a failure.
+		if isAdmissionUnsupported(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	if state == nil {
+		return "", nil
+	}
+	if state.Status != StatusActive {
+		return "", sessionGateError(state)
+	}
+	if state.InstanceID != "" {
+		rememberSession(c.apiKey, state.InstanceID, model)
+	}
+	return state.InstanceID, nil
+}
+
+// isAdmissionUnsupported reports whether err means the server has no admission
+// endpoint, as opposed to admission being refused.
+func isAdmissionUnsupported(err error) bool {
+	var se *SessionError
+	return asSessionError(err, &se) && se.ErrorCode == errCodeAdmissionUnsupported
+}
+
+// sessionGateError renders a gate decision as an error an operator can act on.
+//
+// The wording is deliberate. These refusals are access decisions, so the message
+// names the gate and says what it means rather than reporting a generic failure
+// that invites a retry which cannot succeed.
+func sessionGateError(state *SessionState) error {
+	if state == nil {
+		return errors.New("freebuff: the session was refused for an unstated reason")
+	}
+	gate := string(state.Status)
+	if gate == "" {
+		gate = "unspecified"
+	}
+	detail := strings.TrimSpace(state.ErrorCode)
+	if detail == "" || detail == gate {
+		return fmt.Errorf("freebuff: %s; the account cannot start this session right now", gate)
+	}
+	return fmt.Errorf("freebuff: %s (%s); the account cannot start this session right now", gate, detail)
 }
 
 // doSessionGET performs a buffered GET against the web host with the session
