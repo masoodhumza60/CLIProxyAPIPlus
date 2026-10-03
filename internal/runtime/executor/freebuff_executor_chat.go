@@ -278,12 +278,30 @@ func reasoningEffortFor(row freebuff.CatalogRow) *string {
 	return &effort
 }
 
+// freebuffAccessDeniedMessage keeps the service's own explanation.
+//
+// The upstream body names the actual reason - "Your account has been
+// suspended." - and that sentence is the only thing that tells an operator what
+// to do next. Replacing it with an instruction to sign in again is worse than
+// useless here: signing in again is precisely the thing that cannot help.
+func freebuffAccessDeniedMessage(sessionErr *freebuff.SessionError) string {
+	if message := strings.TrimSpace(sessionErr.Error()); message != "" {
+		return "freebuff: access denied by the service: " + message
+	}
+	return "freebuff: access denied by the service (HTTP 403); it did not say why"
+}
+
 // classifyChatError turns a transport or stream failure into something the
 // conductor can act on.
 //
 // A rejected session is credential-scoped so the conductor stops routing to a
 // credential that cannot work, and the message names re-authentication because
 // retrying an expired session cannot succeed.
+//
+// A 403 is deliberately treated apart from a 401. The service returns 403 for
+// account-level access decisions and per-model or per-slot gates, not only for
+// a rejected token, so marking it credential-scoped would take a usable account
+// out of rotation for a reason re-authentication cannot fix.
 func (e *FreebuffExecutor) classifyChatError(err error) error {
 	if err == nil {
 		return nil
@@ -291,11 +309,16 @@ func (e *FreebuffExecutor) classifyChatError(err error) error {
 	var sessionErr *freebuff.SessionError
 	if asFreebuffSessionError(err, &sessionErr) {
 		switch sessionErr.StatusCode() {
-		case 401, 403:
+		case 401:
 			return freebuffStatusError{
 				code:        401,
 				msg:         freebuffSessionExpiredMessage,
 				credentials: true,
+			}
+		case 403:
+			return freebuffStatusError{
+				code: 403,
+				msg:  freebuffAccessDeniedMessage(sessionErr),
 			}
 		case 429:
 			return freebuffStatusError{code: 429, msg: sessionErr.Error()}

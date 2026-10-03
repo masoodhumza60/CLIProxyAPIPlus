@@ -364,19 +364,38 @@ func isAdmissionUnsupported(err error) bool {
 // The wording is deliberate. These refusals are access decisions, so the message
 // names the gate and says what it means rather than reporting a generic failure
 // that invites a retry which cannot succeed.
+//
+// It returns a *SessionError with a 403 rather than a plain error on purpose. A
+// gate is the service refusing access, not a dead credential and not a broken
+// transport, and only the typed error lets the caller tell those three apart.
+// A plain error arrives with no status, gets classified as an upstream fault,
+// and is reported as a 502 - which hides both the gate's name and the fact that
+// no amount of signing in again would change the outcome.
 func sessionGateError(state *SessionState) error {
 	if state == nil {
-		return errors.New("freebuff: the session was refused for an unstated reason")
+		return &SessionError{
+			Status:  http.StatusForbidden,
+			Message: "the session was refused for an unstated reason",
+			Method:  http.MethodPost,
+			Path:    pathSessionAdmission,
+		}
 	}
 	gate := string(state.Status)
 	if gate == "" {
 		gate = "unspecified"
 	}
 	detail := strings.TrimSpace(state.ErrorCode)
-	if detail == "" || detail == gate {
-		return fmt.Errorf("freebuff: %s; the account cannot start this session right now", gate)
+	message := gate
+	if detail != "" && detail != gate {
+		message = gate + " (" + detail + ")"
 	}
-	return fmt.Errorf("freebuff: %s (%s); the account cannot start this session right now", gate, detail)
+	return &SessionError{
+		Status:    http.StatusForbidden,
+		Message:   message + "; the account cannot start this session right now",
+		ErrorCode: detail,
+		Method:    http.MethodPost,
+		Path:      pathSessionAdmission,
+	}
 }
 
 // doSessionGET performs a buffered GET against the web host with the session
