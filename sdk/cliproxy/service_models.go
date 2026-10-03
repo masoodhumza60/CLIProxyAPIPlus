@@ -596,14 +596,35 @@ func (s *Service) resolveConfigQoderKey(auth *coreauth.Auth) *config.QoderKey {
 // operator cannot point this provider at an arbitrary host through a stray
 // config key; the only credential that exists is one a login produced or a
 // config entry created.
-func freebuffCredentialFor(a *coreauth.Auth) (apiKey, webBaseURL string) {
+// freebuffAuthValue reads a credential field that may live in either map.
+//
+// A credential loaded from disk keeps the whole document in Metadata and leaves
+// Attributes holding only routing keys, so a token written by the sign-in flow
+// is only ever in Metadata. An auth built in memory - from configuration, or
+// returned straight from a sign-in - carries it in Attributes instead. Reading
+// one map therefore works for half the credentials and silently yields nothing
+// for the rest, which is how a saved account ended up advertising no models at
+// all while still appearing in the credential list.
+func freebuffAuthValue(a *coreauth.Auth, key string) string {
 	if a == nil {
-		return "", ""
+		return ""
+	}
+	if a.Metadata != nil {
+		if raw, ok := a.Metadata[key].(string); ok {
+			if trimmed := strings.TrimSpace(raw); trimmed != "" {
+				return trimmed
+			}
+		}
 	}
 	if a.Attributes != nil {
-		apiKey = a.Attributes["api_key"]
-		webBaseURL = strings.TrimSpace(a.Attributes["base_url"])
+		return strings.TrimSpace(a.Attributes[key])
 	}
+	return ""
+}
+
+func freebuffCredentialFor(a *coreauth.Auth) (apiKey, webBaseURL string) {
+	apiKey = freebuffAuthValue(a, "api_key")
+	webBaseURL = freebuffAuthValue(a, "base_url")
 	if webBaseURL == "" {
 		webBaseURL = executor.FreebuffDefaultWebHost()
 	}
