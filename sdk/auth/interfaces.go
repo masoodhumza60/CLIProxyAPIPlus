@@ -19,6 +19,11 @@ type LoginOptions struct {
 	CallbackPort int
 	Metadata     map[string]string
 	Prompt       func(prompt string) (string, error)
+	// OnLoginURL, when set, receives the sign-in URL a provider needs the user
+	// to open. Providers that open a browser themselves may ignore it; it exists
+	// for callers that have nowhere to open a browser, such as a desktop
+	// application, which must present the URL instead.
+	OnLoginURL func(loginURL string)
 }
 
 // Authenticator manages login and optional refresh flows for a provider.
