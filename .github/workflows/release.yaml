@@ -181,12 +181,16 @@ jobs:
           printf '{"version":"v%s","assetName":"%s","installedAtUnix":%s}\n' \
             "$RELEASE_VERSION" "$archive_name" "$(date +%s)" > "$archive_dir/cpa-gui-meta.json"
 
-          cp LICENSE "$archive_dir/"
+          # config.example.yaml is required: the desktop application reads it as the
+          # template it migrates an existing configuration into, and refuses an
+          # archive without one. The readme copies are not - they stay in the
+          # repository, which is a better home for them than inside a download.
+          cp LICENSE config.example.yaml "$archive_dir/"
           if [[ "$ARCHIVE_FORMAT" == "zip" ]]; then
             powershell -NoProfile -Command "Compress-Archive -Path '${archive_dir}/*' -DestinationPath 'dist/${archive_name}' -Force"
           else
             tar -C "$archive_dir" -czf "dist/$archive_name" \
-              "$binary_name" LICENSE core-version.txt cpa-gui-meta.json
+              "$binary_name" config.example.yaml LICENSE core-version.txt cpa-gui-meta.json
           fi
       - uses: actions/upload-artifact@v4
         with:
@@ -325,8 +329,12 @@ jobs:
           printf '%s' "$RELEASE_VERSION" > "$archive_dir/core-version.txt"
           printf '{"version":"v%s","assetName":"%s","installedAtUnix":%s}\n' \
             "$RELEASE_VERSION" "$archive_name" "$(date +%s)" > "$archive_dir/cpa-gui-meta.json"
-          cp LICENSE "$archive_dir/"
-          tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api LICENSE core-version.txt cpa-gui-meta.json
+          # config.example.yaml is required: the desktop application reads it as the
+          # template it migrates an existing configuration into, and refuses an
+          # archive without one. The readme copies are not - they stay in the
+          # repository, which is a better home for them than inside a download.
+          cp LICENSE config.example.yaml "$archive_dir/"
+          tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api config.example.yaml LICENSE core-version.txt cpa-gui-meta.json
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
@@ -447,8 +455,12 @@ jobs:
           printf '%s' "$RELEASE_VERSION" > "$archive_dir/core-version.txt"
           printf '{"version":"v%s","assetName":"%s","installedAtUnix":%s}\n' \
             "$RELEASE_VERSION" "$archive_name" "$(date +%s)" > "$archive_dir/cpa-gui-meta.json"
-          cp LICENSE "$archive_dir/"
-          tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api LICENSE core-version.txt cpa-gui-meta.json
+          # config.example.yaml is required: the desktop application reads it as the
+          # template it migrates an existing configuration into, and refuses an
+          # archive without one. The readme copies are not - they stay in the
+          # repository, which is a better home for them than inside a download.
+          cp LICENSE config.example.yaml "$archive_dir/"
+          tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api config.example.yaml LICENSE core-version.txt cpa-gui-meta.json
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
@@ -651,8 +663,12 @@ jobs:
           printf '%s' "$RELEASE_VERSION" > "$archive_dir/core-version.txt"
           printf '{"version":"v%s","assetName":"%s","installedAtUnix":%s}\n' \
             "$RELEASE_VERSION" "$archive_name" "$(date +%s)" > "$archive_dir/cpa-gui-meta.json"
-          cp LICENSE "$archive_dir/"
-          tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api LICENSE core-version.txt cpa-gui-meta.json
+          # config.example.yaml is required: the desktop application reads it as the
+          # template it migrates an existing configuration into, and refuses an
+          # archive without one. The readme copies are not - they stay in the
+          # repository, which is a better home for them than inside a download.
+          cp LICENSE config.example.yaml "$archive_dir/"
+          tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api config.example.yaml LICENSE core-version.txt cpa-gui-meta.json
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
