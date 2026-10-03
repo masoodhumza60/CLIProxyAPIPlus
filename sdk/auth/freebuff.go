@@ -91,6 +91,12 @@ func (a *FreebuffAuthenticator) Login(ctx context.Context, cfg *config.Config, o
 
 	noBrowser := opts.NoBrowser
 	result, err := client.Login(ctx, fingerprintID, func(loginURL string) {
+		// Hand the URL to the caller first: a desktop application has to show
+		// it, and it can only do that if it is told before we try to open a
+		// browser the process may not have one to open.
+		if onLoginURL := opts.OnLoginURL; onLoginURL != nil {
+			onLoginURL(loginURL)
+		}
 		if noBrowser {
 			fmt.Printf("Visit the following URL to sign in to Freebuff:\n%s\n", loginURL)
 			return
@@ -117,16 +123,32 @@ func (a *FreebuffAuthenticator) Login(ctx context.Context, cfg *config.Config, o
 		authID = fmt.Sprintf("freebuff:%s", fingerprintID)
 	}
 
+	// The token has to appear in both maps, not just one. Attributes drive the
+	// in-memory record, but the credential file is serialised from Metadata, so
+	// a record carrying the token only in Attributes saves as a credential with
+	// nothing in it - present, listed, and rejected on every request.
+	attrs := map[string]string{
+		"api_key":  result.AuthToken,
+		"base_url": baseURL,
+	}
+	if result.UserID != "" {
+		attrs["user_id"] = result.UserID
+	}
+	if result.Email != "" {
+		attrs["email"] = result.Email
+	}
+
 	metadata := map[string]any{
+		"type":           "freebuff",
+		"api_key":        result.AuthToken,
+		"base_url":       baseURL,
 		"fingerprint_id": fingerprintID,
 	}
 	if result.Email != "" {
 		metadata["email"] = result.Email
 	}
-
-	attrs := map[string]string{
-		"api_key":  result.AuthToken,
-		"base_url": baseURL,
+	if result.UserID != "" {
+		metadata["user_id"] = result.UserID
 	}
 
 	return &coreauth.Auth{
