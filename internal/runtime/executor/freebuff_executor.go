@@ -89,12 +89,35 @@ func (e *FreebuffExecutor) RequestToFormat(_ cliproxyexecutor.Request, _ cliprox
 	return sdktranslator.FormatOpenAI
 }
 
-// freebuffAPIKey extracts the API key from the selected credential.
-func freebuffAPIKey(auth *cliproxyauth.Auth) string {
+// freebuffAuthValue reads a credential field that may live in either map.
+//
+// A credential loaded from a file keeps the whole saved document in Metadata
+// and leaves Attributes holding only routing keys, so a token written by
+// `freebuff login` is only ever in Metadata. An auth built in memory - from
+// config, or returned straight from a sign-in - carries it in Attributes.
+// Reading one map therefore works for half the credentials and fails for the
+// other half, and for a signed-in account that failure is indistinguishable
+// from a provider that cannot be used at all.
+func freebuffAuthValue(auth *cliproxyauth.Auth, key string) string {
 	if auth == nil {
 		return ""
 	}
-	return strings.TrimSpace(auth.Attributes["api_key"])
+	if auth.Metadata != nil {
+		if raw, ok := auth.Metadata[key].(string); ok {
+			if trimmed := strings.TrimSpace(raw); trimmed != "" {
+				return trimmed
+			}
+		}
+	}
+	if auth.Attributes != nil {
+		return strings.TrimSpace(auth.Attributes[key])
+	}
+	return ""
+}
+
+// freebuffAPIKey extracts the API key from the selected credential.
+func freebuffAPIKey(auth *cliproxyauth.Auth) string {
+	return freebuffAuthValue(auth, "api_key")
 }
 
 // freebuffBaseURL resolves the endpoint for a request.
@@ -105,10 +128,8 @@ func freebuffAPIKey(auth *cliproxyauth.Auth) string {
 // assuming an origin would turn a missing setting into what looks like an
 // upstream outage rather than a configuration mistake.
 func (e *FreebuffExecutor) freebuffBaseURL(auth *cliproxyauth.Auth) string {
-	if auth != nil {
-		if fromCredential := strings.TrimSpace(auth.Attributes["base_url"]); fromCredential != "" {
-			return fromCredential
-		}
+	if fromCredential := freebuffAuthValue(auth, "base_url"); fromCredential != "" {
+		return fromCredential
 	}
 	if e.cfg == nil {
 		return ""
