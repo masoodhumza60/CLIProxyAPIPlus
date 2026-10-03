@@ -10,11 +10,11 @@ func TestQoderKeyParsing(t *testing.T) {
 	yamlStr := `
 qoder:
   enabled: true
-  qoder-api-key:
-    - name: "test"
-      token: "pat-xxx"
-      backend: "cn"
-      models: [qoder-cn, auto]
+qoder-api-key:
+  - name: "test"
+    token: "pat-xxx"
+    backend: "cn"
+    models: [qoder-cn, auto]
 `
 	var cfg Config
 	err := yaml.Unmarshal([]byte(yamlStr), &cfg)
@@ -24,10 +24,10 @@ qoder:
 	if !cfg.Qoder.Enabled {
 		t.Fatal("expected qoder enabled")
 	}
-	if len(cfg.Qoder.Keys) != 1 {
-		t.Fatalf("expected 1 key, got %d", len(cfg.Qoder.Keys))
+	if len(cfg.QoderKey) != 1 {
+		t.Fatalf("expected 1 key, got %d", len(cfg.QoderKey))
 	}
-	key := cfg.Qoder.Keys[0]
+	key := cfg.QoderKey[0]
 	if key.Name != "test" || key.Token != "pat-xxx" || key.Backend != "cn" {
 		t.Errorf("unexpected key: %+v", key)
 	}

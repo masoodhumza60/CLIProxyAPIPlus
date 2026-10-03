@@ -6,12 +6,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelconfig"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/constant"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/modelconfig"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
 // registerModelsForAuth (re)binds provider models in the global registry using the core auth ID as client identifier.
@@ -151,7 +151,7 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 			models = registry.GetCodexProModels()
 		}
 		models = applyExcludedModels(models, excluded)
-	case "kimi":
+	case "kimi", "kimi-ai", "kimi.ai", "kimi.com":
 		models = registry.GetKimiModels()
 		models = applyExcludedModels(models, excluded)
 	case "xai":
@@ -324,6 +324,7 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 	}
 	models = s.appendPluginModels(key, models)
 	if len(models) > 0 {
+		models = applyOAuthSettingsForAuth(s.cfg, provider, authKind, models)
 		s.registerResolvedModelsForAuth(a, key, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
 		if strings.EqualFold(strings.TrimSpace(a.Provider), "antigravity") {
 			s.asyncProbeAntigravityCapabilities(ctx, a, key)
@@ -560,7 +561,7 @@ func (s *Service) resolveConfigQoderKey(auth *coreauth.Auth) *config.QoderKey {
 	if auth == nil || s.cfg == nil {
 		return nil
 	}
-	if entry := configEntryForAuthIndex(auth, s.cfg.Qoder.Keys); entry != nil {
+	if entry := configEntryForAuthIndex(auth, s.cfg.QoderKey); entry != nil {
 		return entry
 	}
 	// Fall back to matching on credentials carried in auth attributes. The Qoder
@@ -571,8 +572,8 @@ func (s *Service) resolveConfigQoderKey(auth *coreauth.Auth) *config.QoderKey {
 		attrKey = strings.TrimSpace(auth.Attributes["api_key"])
 		attrBackend = strings.ToLower(strings.TrimSpace(auth.Attributes["backend"]))
 	}
-	for i := range s.cfg.Qoder.Keys {
-		entry := &s.cfg.Qoder.Keys[i]
+	for i := range s.cfg.QoderKey {
+		entry := &s.cfg.QoderKey[i]
 		cfgKey := strings.TrimSpace(entry.Token)
 		cfgBackend := registry.NormalizeQoderBackend(entry.Backend)
 		if attrKey != "" && cfgKey != "" && strings.EqualFold(cfgKey, attrKey) {
@@ -617,13 +618,13 @@ func (s *Service) resolveConfigFreebuffKey(a *coreauth.Auth) *config.FreebuffKey
 	}
 	apiKey, _ := freebuffCredentialFor(a)
 	if apiKey != "" {
-		for i := range s.cfg.Freebuff.Keys {
-			if s.cfg.Freebuff.Keys[i].Token == apiKey {
-				return &s.cfg.Freebuff.Keys[i]
+		for i := range s.cfg.FreebuffKey {
+			if s.cfg.FreebuffKey[i].Token == apiKey {
+				return &s.cfg.FreebuffKey[i]
 			}
 		}
 	}
-	if entry := configEntryForAuthIndex(a, s.cfg.Freebuff.Keys); entry != nil {
+	if entry := configEntryForAuthIndex(a, s.cfg.FreebuffKey); entry != nil {
 		return entry
 	}
 	return nil
@@ -1045,11 +1046,18 @@ func buildCodexConfigModels(entry *config.CodexKey) []*ModelInfo {
 		return nil
 	}
 	if len(entry.Models) == 0 {
-		return registry.GetCodexProModels()
+		models := registry.GetCodexProModels()
+		for _, model := range models {
+			if model != nil {
+				model.SupportConfigurationUpdate = false
+			}
+		}
+		return models
 	}
 
 	models := buildConfigModels(entry.Models, "openai", "openai", "codex")
 	configuredDisplayNames := make(map[string]string, len(entry.Models))
+	configuredConfigurationUpdates := make(map[string]bool, len(entry.Models))
 	seenConfiguredModels := make(map[string]struct{}, len(entry.Models))
 	for i := range entry.Models {
 		model := entry.Models[i]
@@ -1065,6 +1073,7 @@ func buildCodexConfigModels(entry *config.CodexKey) []*ModelInfo {
 			continue
 		}
 		seenConfiguredModels[key] = struct{}{}
+		configuredConfigurationUpdates[key] = model.SupportConfigurationUpdate
 
 		displayName := strings.TrimSpace(model.DisplayName)
 		if displayName != "" {
@@ -1075,9 +1084,11 @@ func buildCodexConfigModels(entry *config.CodexKey) []*ModelInfo {
 		if model == nil {
 			continue
 		}
-		if displayName, ok := configuredDisplayNames[strings.ToLower(model.ID)]; ok {
+		key := strings.ToLower(model.ID)
+		if displayName, ok := configuredDisplayNames[key]; ok {
 			model.DisplayName = displayName
 		}
+		model.SupportConfigurationUpdate = configuredConfigurationUpdates[key]
 	}
 	return models
 }
@@ -1261,6 +1272,54 @@ func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*Mod
 				continue
 			}
 			seen[key] = struct{}{}
+			out = append(out, model)
+		}
+	}
+	return out
+}
+
+func applyOAuthSettings(cfg *config.Config, provider, authKind string, models []*ModelInfo) []*ModelInfo {
+	return applyOAuthSettingsForAuth(cfg, provider, authKind, models)
+}
+
+func applyOAuthSettingsForAuth(cfg *config.Config, provider, authKind string, models []*ModelInfo) []*ModelInfo {
+	if len(models) == 0 {
+		return models
+	}
+	channel := coreauth.OAuthModelAliasChannel(provider, authKind)
+	if channel == "" {
+		return models
+	}
+	settings := oauthSettingsForAuth(cfg, channel)
+	if len(settings) == 0 {
+		return models
+	}
+	return applyOAuthSettingEntries(settings, models)
+}
+
+func oauthSettingsForAuth(cfg *config.Config, channel string) []config.OAuthModelSetting {
+	if cfg == nil || len(cfg.OAuthSettings) == 0 {
+		return nil
+	}
+	return cfg.OAuthSettings[channel]
+}
+
+func applyOAuthSettingEntries(settings []config.OAuthModelSetting, models []*ModelInfo) []*ModelInfo {
+	if len(settings) == 0 || len(models) == 0 {
+		return models
+	}
+	out := make([]*ModelInfo, 0, len(models))
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		setting := config.ResolveOAuthModelSetting(settings, model.ID, model.MetadataModelID, model.Name)
+		if setting != nil && setting.MaxContextLength > 0 {
+			clone := *model
+			clone.ContextLength = setting.MaxContextLength
+			clone.MaxContextLength = setting.MaxContextLength
+			out = append(out, &clone)
+		} else {
 			out = append(out, model)
 		}
 	}

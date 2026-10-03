@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 )
 
 func qoderSynthesisContext(cfg *config.Config) *SynthesisContext {
@@ -18,21 +18,19 @@ func qoderSynthesisContext(cfg *config.Config) *SynthesisContext {
 
 func TestSynthesizeQoderKeysAttributes(t *testing.T) {
 	cfg := &config.Config{
-		Qoder: config.QoderConfig{
-			Enabled: true,
-			Keys: []config.QoderKey{
-				{
-					Name:    "cn-key",
-					Token:   "pat-test-token",
-					Backend: "cn",
-					Models:  []string{"qoder-cn"},
-				},
-				{
-					// A global key authenticates through the `qodercli login`
-					// session, so it carries no token.
-					Name:    "global-key",
-					Backend: "Global ",
-				},
+		Qoder: config.QoderConfig{Enabled: true},
+		QoderKey: []config.QoderKey{
+			{
+				Name:    "cn-key",
+				Token:   "pat-test-token",
+				Backend: "cn",
+				Models:  []string{"qoder-cn"},
+			},
+			{
+				// A global key authenticates through the `qodercli login`
+				// session, so it carries no token.
+				Name:    "global-key",
+				Backend: "Global ",
 			},
 		},
 	}
@@ -78,10 +76,8 @@ func TestSynthesizeQoderKeysAttributes(t *testing.T) {
 
 func TestSynthesizeQoderKeysBackendDefaultsToGlobal(t *testing.T) {
 	cfg := &config.Config{
-		Qoder: config.QoderConfig{
-			Enabled: true,
-			Keys:    []config.QoderKey{{Name: "no-backend"}},
-		},
+		Qoder:    config.QoderConfig{Enabled: true},
+		QoderKey: []config.QoderKey{{Name: "no-backend"}},
 	}
 
 	entries := (&ConfigSynthesizer{}).synthesizeQoderKeys(qoderSynthesisContext(cfg))
@@ -98,12 +94,10 @@ func TestSynthesizeQoderKeysBackendDefaultsToGlobal(t *testing.T) {
 func TestSynthesizeQoderKeysDisabledProducesNoCredentials(t *testing.T) {
 	// Keys are deliberately non-empty: the flag alone must suppress synthesis.
 	cfg := &config.Config{
-		Qoder: config.QoderConfig{
-			Enabled: false,
-			Keys: []config.QoderKey{
-				{Name: "a", Token: "pat-a", Backend: "cn"},
-				{Name: "b", Token: "pat-b", Backend: "global"},
-			},
+		Qoder: config.QoderConfig{Enabled: false},
+		QoderKey: []config.QoderKey{
+			{Name: "a", Token: "pat-a", Backend: "cn"},
+			{Name: "b", Token: "pat-b", Backend: "global"},
 		},
 	}
 
@@ -115,10 +109,8 @@ func TestSynthesizeQoderKeysDisabledProducesNoCredentials(t *testing.T) {
 
 func TestSynthesizeQoderKeysSkipsUnnamedKeys(t *testing.T) {
 	cfg := &config.Config{
-		Qoder: config.QoderConfig{
-			Enabled: true,
-			Keys:    []config.QoderKey{{Name: "   "}, {Name: "kept", Backend: "global"}},
-		},
+		Qoder:    config.QoderConfig{Enabled: true},
+		QoderKey: []config.QoderKey{{Name: "   "}, {Name: "kept", Backend: "global"}},
 	}
 
 	entries := (&ConfigSynthesizer{}).synthesizeQoderKeys(qoderSynthesisContext(cfg))
@@ -132,10 +124,8 @@ func TestSynthesizeQoderKeysSkipsUnnamedKeys(t *testing.T) {
 
 func TestSynthesizeQoderKeysIDsAreStableAcrossRuns(t *testing.T) {
 	cfg := &config.Config{
-		Qoder: config.QoderConfig{
-			Enabled: true,
-			Keys:    []config.QoderKey{{Name: "stable", Token: "pat", Backend: "cn"}},
-		},
+		Qoder:    config.QoderConfig{Enabled: true},
+		QoderKey: []config.QoderKey{{Name: "stable", Token: "pat", Backend: "cn"}},
 	}
 
 	first := (&ConfigSynthesizer{}).synthesizeQoderKeys(qoderSynthesisContext(cfg))

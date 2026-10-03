@@ -3,8 +3,8 @@
 package executor
 
 import (
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/freebuff"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/freebuff"
 )
 
 // NewFreebuffExecutorForTest builds a Freebuff executor wired to a fixed base URL.

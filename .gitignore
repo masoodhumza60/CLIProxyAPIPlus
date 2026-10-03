@@ -37,6 +37,7 @@ docs/*
 # documents why the provider has no configurable endpoint and that its access
 # gates are reported rather than worked around.
 !docs/freebuff-protocol.md
+!docs/management-api-v8.md
 AGENTS.md
 CLAUDE.md
 GEMINI.md

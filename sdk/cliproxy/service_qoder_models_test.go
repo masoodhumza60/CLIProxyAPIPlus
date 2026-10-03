@@ -3,16 +3,17 @@ package cliproxy
 import (
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
 // qoderTestService builds a Service carrying the supplied Qoder keys.
 func qoderTestService(keys ...config.QoderKey) *Service {
 	return &Service{
 		cfg: &config.Config{
-			Qoder: config.QoderConfig{Enabled: true, Keys: keys},
+			Qoder:    config.QoderConfig{Enabled: true},
+			QoderKey: keys,
 		},
 	}
 }

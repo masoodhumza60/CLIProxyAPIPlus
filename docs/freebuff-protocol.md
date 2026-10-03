@@ -17,19 +17,32 @@ usual OpenAI and Anthropic routes serve them.
 ## Configuration
 
 ```yaml
-freebuff:
-  enabled: true
-  # Where login and chat live.
-  base-url: "https://freebuff.com"
-  # Optional. Only needed for a self-hosted deployment; see "Two origins" below.
-  catalog-base-url: "https://www.codebuff.com"
-  freebuff-api-key:
-    - name: my-account
-      token: <not needed: run `freebuff login` instead>
-      models:
-        - MiMo 2.6 Flash
-        - GLM 5.3 Flash
+upstream:
+  freebuff:
+    enabled: true
+    # Where login and chat live.
+    base-url: "https://freebuff.com"
+    # Optional. Only needed for a self-hosted deployment; see "Two origins" below.
+    catalog-base-url: "https://www.codebuff.com"
+
+# Credentials live at the top level, the same place every other provider keeps
+# its keys. Under the v8 layout this is written as a group instead:
+#   api-keys:
+#     freebuff:
+#       - keys:
+#           - name: my-account
+#             token: <not needed: run `freebuff login` instead>
+freebuff-api-key:
+  - name: my-account
+    token: <not needed: run `freebuff login` instead>
+    models:
+      - MiMo 2.6 Flash
+      - GLM 5.3 Flash
 ```
+
+Provider settings live under `upstream:`; credentials live at the top level as
+`<provider>-api-key`. Keeping the key list inside the provider block does not
+work — the setting is read, the key list is silently ignored.
 
 `models:` is an allow-list and is optional. It can only narrow the discovered
 list — it can never add a model the account cannot run, because the service is

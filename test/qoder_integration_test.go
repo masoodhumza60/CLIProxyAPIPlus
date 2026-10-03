@@ -3,21 +3,19 @@ package test
 import (
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
 )
 
 func TestQoderEndToEnd(t *testing.T) {
 	cfg := &config.Config{
-		Qoder: config.QoderConfig{
-			Enabled: true,
-			Keys: []config.QoderKey{
-				{
-					Name:    "test",
-					Token:   "pat-test",
-					Backend: "cn",
-					Models:  []string{"qoder-cn", "auto"},
-				},
+		Qoder: config.QoderConfig{Enabled: true},
+		QoderKey: []config.QoderKey{
+			{
+				Name:    "test",
+				Token:   "pat-test",
+				Backend: "cn",
+				Models:  []string{"qoder-cn", "auto"},
 			},
 		},
 	}

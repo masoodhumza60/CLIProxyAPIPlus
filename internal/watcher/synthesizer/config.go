@@ -5,12 +5,12 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/diff"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/constant"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/diff"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 // ConfigSynthesizer generates Auth entries from configuration API keys.
@@ -233,9 +233,9 @@ func (s *ConfigSynthesizer) synthesizeQoderKeys(ctx *SynthesisContext) []*coreau
 
 	idGen := ctx.IDGenerator
 
-	out := make([]*coreauth.Auth, 0, len(cfg.Qoder.Keys))
-	for i := range cfg.Qoder.Keys {
-		qk := cfg.Qoder.Keys[i]
+	out := make([]*coreauth.Auth, 0, len(cfg.QoderKey))
+	for i := range cfg.QoderKey {
+		qk := cfg.QoderKey[i]
 		name := strings.TrimSpace(qk.Name)
 		if name == "" {
 			continue
@@ -289,9 +289,9 @@ func (s *ConfigSynthesizer) synthesizeFreebuffKeys(ctx *SynthesisContext) []*cor
 	baseURL := strings.TrimSpace(cfg.Freebuff.BaseURL)
 	idGen := ctx.IDGenerator
 
-	out := make([]*coreauth.Auth, 0, len(cfg.Freebuff.Keys))
-	for i := range cfg.Freebuff.Keys {
-		fk := cfg.Freebuff.Keys[i]
+	out := make([]*coreauth.Auth, 0, len(cfg.FreebuffKey))
+	for i := range cfg.FreebuffKey {
+		fk := cfg.FreebuffKey[i]
 		name := strings.TrimSpace(fk.Name)
 		token := strings.TrimSpace(fk.Token)
 		if name == "" || token == "" {
@@ -363,6 +363,9 @@ func (s *ConfigSynthesizer) synthesizeCodexStyleKeys(ctx *SynthesisContext, entr
 		}
 		if provider == "codex" && entry.AlphaSearch {
 			attrs[coreauth.AttributeCodexAlphaSearch] = "true"
+		}
+		if provider == "codex" && entry.DisableCodexCloaking != nil {
+			attrs[coreauth.AttributeCodexDisableCloaking] = strconv.FormatBool(*entry.DisableCodexCloaking)
 		}
 		if hash := diff.ComputeCodexModelsHash(entry.Models); hash != "" {
 			attrs["models_hash"] = hash

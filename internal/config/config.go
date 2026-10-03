@@ -13,6 +13,10 @@ type Config struct {
 	// Port is the network port on which the API server will listen.
 	Port int `yaml:"port" json:"-"`
 
+	// TrustedProxies lists the IPs or CIDRs allowed to provide forwarded client IP headers.
+	// The server applies this list at startup; changing it requires a restart.
+	TrustedProxies []string `yaml:"trusted-proxies" json:"trusted-proxies"`
+
 	// TLS config controls HTTPS server settings.
 	TLS TLSConfig `yaml:"tls" json:"tls"`
 
@@ -181,6 +185,9 @@ type Config struct {
 	// NOTE: This applies only to OAuth credentials and does not affect per-credential request-scoped-errors under *-api-key.
 	OAuthRequestScopedErrors map[string][]RequestScopedErrorRule `yaml:"oauth-request-scoped-errors,omitempty" json:"oauth-request-scoped-errors,omitempty"`
 
+	// OAuthSettings defines per-channel model settings (such as max-context-length) applied to OAuth/file-backed auth entries.
+	OAuthSettings map[string][]OAuthModelSetting `yaml:"oauth-settings,omitempty" json:"oauth-settings,omitempty"`
+
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
 
@@ -191,4 +198,15 @@ type Config struct {
 	// rather than defaulted: guessing an origin would turn a typo in the config
 	// into what looks like an upstream outage.
 	Freebuff FreebuffConfig `yaml:"freebuff" json:"freebuff"`
+
+	// QoderKey and FreebuffKey carry provider credentials.
+	//
+	// They sit at the top level rather than inside their provider settings
+	// because that is the only place the v8 layout recognises a key list: the
+	// migration tables map a `<provider>-api-key` field onto the
+	// `api-keys.<provider>` group. Nesting them under qoder or freebuff would
+	// place them under upstream.<provider>, where a credential list has no
+	// meaning and the layout validator rejects the file.
+	QoderKey    []QoderKey    `yaml:"qoder-api-key" json:"qoder-api-key"`
+	FreebuffKey []FreebuffKey `yaml:"freebuff-api-key" json:"freebuff-api-key"`
 }
