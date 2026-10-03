@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/browser"
@@ -53,6 +54,37 @@ func freebuffFingerprintID() (string, error) {
 		return "", fmt.Errorf("freebuff: generate login fingerprint: %w", err)
 	}
 	return "cli-proxy-" + hex.EncodeToString(buf), nil
+}
+
+// freebuffCredentialFileName builds the on-disk name for a Freebuff account.
+//
+// This value is also the credential's identity, and it becomes a file name
+// verbatim, so it has to survive the filesystem it lands on. The identifier used
+// to be joined with a colon - "freebuff:<user id>" - which is legal on Linux and
+// macOS and rejected outright on Windows. Nothing reported the failure: the
+// write produced an empty file named after the part before the colon, the
+// account vanished from the credential list, and a sign-in that had reported
+// success appeared to have done nothing at all.
+//
+// So the name is reduced to characters every filesystem accepts, keeping the
+// shape the other providers already use: provider, separator, identifier, .json.
+func freebuffCredentialFileName(identifier string) string {
+	safe := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			return r
+		case r == '-', r == '_':
+			return r
+		default:
+			return -1
+		}
+	}, strings.TrimSpace(identifier))
+	if safe == "" {
+		// An account that reported no identifier still needs a stable, writable
+		// name; the fingerprint-derived identifier normally prevents this.
+		return "freebuff-account.json"
+	}
+	return fmt.Sprintf("freebuff-%s.json", safe)
 }
 
 // Login performs a browser login and returns a credential ready to persist.
@@ -116,12 +148,13 @@ func (a *FreebuffAuthenticator) Login(ctx context.Context, cfg *config.Config, o
 		return nil, err
 	}
 
-	authID := fmt.Sprintf("freebuff:%s", result.UserID)
-	if result.UserID == "" {
+	identifier := result.UserID
+	if identifier == "" {
 		// Fall back to a stable id derived from the fingerprint so repeated
 		// logins from one machine do not silently create duplicates.
-		authID = fmt.Sprintf("freebuff:%s", fingerprintID)
+		identifier = fingerprintID
 	}
+	fileName := freebuffCredentialFileName(identifier)
 
 	// The token has to appear in both maps, not just one. Attributes drive the
 	// in-memory record, but the credential file is serialised from Metadata, so
@@ -152,7 +185,8 @@ func (a *FreebuffAuthenticator) Login(ctx context.Context, cfg *config.Config, o
 	}
 
 	return &coreauth.Auth{
-		ID:         authID,
+		ID:         fileName,
+		FileName:   fileName,
 		Provider:   "freebuff",
 		Status:     coreauth.StatusActive,
 		Attributes: attrs,
