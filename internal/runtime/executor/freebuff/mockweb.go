@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // This file is the test-only upstream fixture.
@@ -188,6 +190,10 @@ type MockUpstream struct {
 	// substitutedFor records a model name the fixture did not recognise and
 	// replaced, mirroring the live service's silent substitution.
 	substitutedFor string
+	// lastRunID is the run the fixture minted and the chat route demands:
+	// a completion whose codebuff_metadata names any other run is refused,
+	// exactly as the live route refuses it.
+	lastRunID string
 	// chatRequests counts accepted completions.
 	chatRequests int
 	// faults is a FIFO queue of scripted failures.
@@ -269,6 +275,8 @@ func (m *MockUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.serveCatalog(w, r)
 	case ChatPath:
 		m.serveChat(w, r)
+	case AgentRunsPath:
+		m.serveAgentRuns(w, r)
 	default:
 		writeMockJSON(w, http.StatusNotFound, map[string]any{"error": "not_found"})
 	}
@@ -371,6 +379,65 @@ func (m *MockUpstream) serveCatalog(w http.ResponseWriter, r *http.Request) {
 	writeMockRaw(w, http.StatusOK, mockCatalog(refreshAt))
 }
 
+// serveAgentRuns answers the run lifecycle the chat route is gated on: START
+// mints a run id the server owns, FINISH closes one. A completion whose
+// codebuff_metadata names any other run is refused, which is exactly the gate
+// the live route enforces.
+func (m *MockUpstream) serveAgentRuns(w http.ResponseWriter, r *http.Request) {
+	bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if bearer != MockAPIKey || r.Header.Get(APIKeyHeader) != MockAPIKey {
+		writeMockJSON(w, http.StatusUnauthorized, map[string]any{
+			"error":   "unauthorized",
+			"message": "Please sign in.",
+		})
+		return
+	}
+
+	var payload struct {
+		Action string `json:"action"`
+		RunID  string `json:"runId"`
+		Status string `json:"status"`
+	}
+	body, err := readMockBody(r)
+	if err != nil || json.Unmarshal(body, &payload) != nil {
+		writeMockJSON(w, http.StatusBadRequest, map[string]any{
+			"error":   "bad_request",
+			"message": "the request body is not valid JSON",
+		})
+		return
+	}
+
+	switch payload.Action {
+	case "START":
+		runID := uuid.NewString()
+		m.mu.Lock()
+		m.lastRunID = runID
+		m.mu.Unlock()
+		writeMockJSON(w, http.StatusOK, map[string]any{"runId": runID})
+	case "FINISH":
+		m.mu.Lock()
+		expected := m.lastRunID
+		m.lastRunID = ""
+		m.mu.Unlock()
+		if expected != "" && payload.RunID != expected {
+			// Finishing a run the server did not mint is bookkeeping gone
+			// wrong, but the answer has already been delivered; the live
+			// service would not fail a chat over a bad finish.
+			writeMockJSON(w, http.StatusBadRequest, map[string]any{
+				"error":   "bad_request",
+				"message": "runId Not Found: " + payload.RunID,
+			})
+			return
+		}
+		writeMockJSON(w, http.StatusOK, map[string]any{})
+	default:
+		writeMockJSON(w, http.StatusBadRequest, map[string]any{
+			"error":   "bad_request",
+			"message": "unknown action",
+		})
+	}
+}
+
 // serveChat answers a streaming completion.
 //
 // The chat route requires the same two auth headers the catalogue route does,
@@ -385,6 +452,16 @@ func (m *MockUpstream) serveChat(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	// The live route refuses any request without the SSE-compression header —
+	// it is the build signal the chat gate checks — so the fixture refuses
+	// without it too, with the live service's own code.
+	if r.Header.Get(SseCompressionHeader) != SseCompressionValue {
+		writeMockJSON(w, http.StatusGone, map[string]any{
+			"error":   "freebuff_update_required",
+			"message": "This version of Freebuff is out of date.",
+		})
+		return
+	}
 	if fault, ok := m.takeFault(ChatPath); ok {
 		writeMockFault(w, fault)
 		return
@@ -393,6 +470,10 @@ func (m *MockUpstream) serveChat(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		Model    string `json:"model"`
 		Messages []any  `json:"messages"`
+		Metadata *struct {
+			RunID    string `json:"run_id"`
+			ClientID string `json:"client_id"`
+		} `json:"codebuff_metadata"`
 	}
 	body, err := readMockBody(r)
 	if err != nil {
@@ -413,6 +494,24 @@ func (m *MockUpstream) serveChat(w http.ResponseWriter, r *http.Request) {
 		writeMockJSON(w, http.StatusBadRequest, map[string]any{
 			"error":   "empty_message",
 			"message": "Message cannot be empty.",
+		})
+		return
+	}
+	if payload.Metadata == nil || strings.TrimSpace(payload.Metadata.RunID) == "" {
+		// The live route refuses a body with no runId, so the fixture does too.
+		writeMockJSON(w, http.StatusBadRequest, map[string]any{
+			"error":   "bad_request",
+			"message": "No runId found in request body",
+		})
+		return
+	}
+	m.mu.Lock()
+	expected := m.lastRunID
+	m.mu.Unlock()
+	if payload.Metadata.RunID != expected {
+		writeMockJSON(w, http.StatusBadRequest, map[string]any{
+			"error":   "bad_request",
+			"message": "runId Not Found: " + payload.Metadata.RunID,
 		})
 		return
 	}

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/freebuff"
@@ -154,13 +155,16 @@ func freebuffEstimateTokens(text string) int {
 //
 // The route is OpenAI-compatible, so the translated body travels almost
 // verbatim. The executor names the model by its catalogue handle — a name the
-// caller sent verbatim would otherwise be substituted silently — and always
-// asks to stream, which leaves one parsing path for both delivery modes.
+// caller sent verbatim would otherwise be substituted silently — always asks
+// to stream, which leaves one parsing path for both delivery modes, and
+// carries the codebuff_metadata envelope the route requires: run_id minted by
+// the backend when the run was started, and a client_id naming this request,
+// the way every first-party client identifies its turns.
 //
 // The catalogue's declared effort is forwarded as reasoning_effort because the
 // upstream prices and floors models by effort; an effort chosen without
 // consulting the catalogue would silently spend more than the account has to.
-func freebuffChatCompletionsBody(translated []byte, model string, reasoningEffort *string) ([]byte, error) {
+func freebuffChatCompletionsBody(translated []byte, model, runID string, reasoningEffort *string) ([]byte, error) {
 	var body map[string]any
 	if err := json.Unmarshal(translated, &body); err != nil {
 		return nil, fmt.Errorf("freebuff: reading the translated request: %w", err)
@@ -176,6 +180,10 @@ func freebuffChatCompletionsBody(translated []byte, model string, reasoningEffor
 		body["model"] = model
 	}
 	body["stream"] = true
+	body["codebuff_metadata"] = map[string]any{
+		"run_id":    runID,
+		"client_id": uuid.NewString(),
+	}
 	if reasoningEffort != nil && strings.TrimSpace(*reasoningEffort) != "" {
 		body["reasoning_effort"] = *reasoningEffort
 	}
@@ -231,8 +239,28 @@ func (e *FreebuffExecutor) executeChat(
 		}
 	}
 
-	payload, err := freebuffChatCompletionsBody(translated, row.Handle, reasoningEffortFor(row))
+	// A chat completion is only accepted inside a run the backend knows
+	// about, so the run is registered first and its server-minted id carried
+	// in the request's codebuff_metadata. Finishing the run afterwards is
+	// bookkeeping: it never rides the request's cancellation (a caller that
+	// hangs up mid-stream must not strand the run half-reported) and a failed
+	// finish is logged, not surfaced.
+	runID, err := client.StartAgentRun(ctx, e.catalogBaseURL, freebuff.RegisterAgentID)
 	if err != nil {
+		return nil, e.classifyChatError(err)
+	}
+	runStatus := "completed"
+	defer func() {
+		go func() {
+			if finishErr := client.FinishAgentRun(context.Background(), e.catalogBaseURL, runID, runStatus); finishErr != nil {
+				log.WithError(finishErr).Debug("freebuff: finishing the agent run failed")
+			}
+		}()
+	}()
+
+	payload, err := freebuffChatCompletionsBody(translated, row.Handle, runID, reasoningEffortFor(row))
+	if err != nil {
+		runStatus = "aborted"
 		return nil, err
 	}
 
@@ -241,6 +269,7 @@ func (e *FreebuffExecutor) executeChat(
 	// base URL carries the chat traffic.
 	body, err := client.ChatStream(ctx, e.catalogBaseURL, payload)
 	if err != nil {
+		runStatus = "aborted"
 		return nil, e.classifyChatError(err)
 	}
 	defer func() {
@@ -258,11 +287,13 @@ func (e *FreebuffExecutor) executeChat(
 		return nil
 	})
 	if scanErr != nil {
+		runStatus = "aborted"
 		if classified := e.classifyChatError(scanErr); !isCredentialLoss(classified) {
 			return nil, classified
 		}
 	}
 	if accumulated.text() == "" && accumulated.reasoningText() == "" {
+		runStatus = "aborted"
 		return nil, freebuffStatusError{code: 502, msg: "freebuff: the stream produced no content"}
 	}
 	return accumulated, nil

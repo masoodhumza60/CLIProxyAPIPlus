@@ -388,7 +388,7 @@ func TestFreebuffExecutorStreamClosesWhenTheCallerDisconnects(t *testing.T) {
 // the model named by its catalogue handle.
 func TestFreebuffChatCompletionsBodyPinsTheRequestShape(t *testing.T) {
 	translated := []byte(`{"model":"ignored","messages":[{"role":"user","content":"hello"}],"temperature":0.2}`)
-	payload, err := freebuffChatCompletionsBody(translated, "fbm1.HANDLE", nil)
+	payload, err := freebuffChatCompletionsBody(translated, "fbm1.HANDLE", "run-1", nil)
 	if err != nil {
 		t.Fatalf("building the body: %v", err)
 	}
@@ -405,6 +405,13 @@ func TestFreebuffChatCompletionsBodyPinsTheRequestShape(t *testing.T) {
 	if body["temperature"] != 0.2 {
 		t.Fatalf("temperature = %#v, want the translated value kept verbatim", body["temperature"])
 	}
+	metadata, ok := body["codebuff_metadata"].(map[string]any)
+	if !ok || metadata["run_id"] != "run-1" {
+		t.Fatalf("codebuff_metadata.run_id = %#v, want the registered run id", body["codebuff_metadata"])
+	}
+	if ok && metadata["client_id"] == "" {
+		t.Fatal("codebuff_metadata.client_id should name this request")
+	}
 	messages, ok := body["messages"].([]any)
 	if !ok || len(messages) != 1 {
 		t.Fatalf("messages = %#v, want the translated ones kept verbatim", body["messages"])
@@ -417,7 +424,7 @@ func TestFreebuffChatCompletionsBodyPinsTheRequestShape(t *testing.T) {
 func TestFreebuffChatCompletionsBodyCarriesReasoningEffort(t *testing.T) {
 	translated := []byte(`{"messages":[{"role":"user","content":"hello"}]}`)
 	effort := "high"
-	payload, err := freebuffChatCompletionsBody(translated, "model", &effort)
+	payload, err := freebuffChatCompletionsBody(translated, "model", "run-1", &effort)
 	if err != nil {
 		t.Fatalf("building the body: %v", err)
 	}
@@ -430,7 +437,7 @@ func TestFreebuffChatCompletionsBodyCarriesReasoningEffort(t *testing.T) {
 	}
 
 	blank := "   "
-	payload, err = freebuffChatCompletionsBody(translated, "model", &blank)
+	payload, err = freebuffChatCompletionsBody(translated, "model", "run-1", &blank)
 	if err != nil {
 		t.Fatalf("building the body: %v", err)
 	}
@@ -451,7 +458,7 @@ func TestFreebuffChatCompletionsBodyRejectsAnEmptyConversation(t *testing.T) {
 		[]byte(`{"messages":"not an array"}`),
 		[]byte(`not json`),
 	} {
-		if _, err := freebuffChatCompletionsBody(translated, "model", nil); err == nil {
+		if _, err := freebuffChatCompletionsBody(translated, "model", "run-1", nil); err == nil {
 			t.Fatalf("a request with no usable content should be refused: %s", translated)
 		}
 	}

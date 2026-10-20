@@ -27,6 +27,26 @@ import (
 // ChatPath is the official CLI's OpenAI-compatible chat route.
 const ChatPath = "/api/v1/chat/completions"
 
+// chatUserAgent is the wire-protocol build identifier the SDK sends on the
+// chat route. The proxy implements exactly that build's protocol — same
+// route, same body shape, same run lifecycle — so the identifier states the
+// build we replicate rather than an identity we do not have. Nothing beyond
+// the protocol build is claimed.
+const chatUserAgent = "ai-sdk/openai-compatible/0.0.0-test/codebuff"
+
+// SseCompressionHeader is the header the SDK sends on every chat-completions
+// request, and the one the chat route actually gates on: without it the route
+// refuses every request with 410 freebuff_update_required, whatever the user
+// agent says (verified against the live service). It also opts the stream into
+// gzip, which Go's transport decompresses transparently. The header declares
+// recovery semantics the SDK implements — continuing a turn whose gzip body
+// ends early — that this transport does not: a truncated stream is surfaced
+// as an error here, never silently continued.
+const SseCompressionHeader = "x-freebuff-sse-gzip-recovery"
+
+// SseCompressionValue is the value the SDK sends alongside the header.
+const SseCompressionValue = "1"
+
 // maxChatLine bounds one line of a chat stream so a misbehaving upstream
 // cannot balloon memory.
 const maxChatLine = 1 << 20
@@ -90,7 +110,8 @@ func (c *Client) ChatStream(ctx context.Context, chatBaseURL string, payload []b
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	req.Header.Set(APIKeyHeader, c.apiKey)
-	req.Header.Set("User-Agent", UserAgent)
+	req.Header.Set("User-Agent", chatUserAgent)
+	req.Header.Set(SseCompressionHeader, SseCompressionValue)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

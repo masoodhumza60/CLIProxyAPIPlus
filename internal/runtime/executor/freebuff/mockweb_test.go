@@ -27,10 +27,15 @@ func newMockClient(t *testing.T) (*Client, *MockUpstream, *httptest.Server) {
 	return client, mock, server
 }
 
-// chatAll streams one turn and returns the collected content.
+// chatAll starts a run and streams one turn against it, the lifecycle every
+// real client follows.
 func chatAll(t *testing.T, client *Client, content string) (*ChatCompletion, error) {
 	t.Helper()
-	return chatPayload(t, client, fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":%q}]}`, MockModelHandle, content))
+	runID, err := client.StartAgentRun(context.Background(), client.BaseURL(), RegisterAgentID)
+	if err != nil {
+		return nil, err
+	}
+	return chatPayload(t, client, fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":%q}],"codebuff_metadata":{"run_id":%q,"client_id":"test-client"}}`, MockModelHandle, content, runID))
 }
 
 // chatPayload streams a pre-rendered request body and returns the collected
@@ -175,8 +180,13 @@ func TestFreebuffChatReportsSubstitution(t *testing.T) {
 	if _, err := chatAll(t, client, "hi"); err != nil {
 		t.Fatalf("streaming: %v", err)
 	}
-	// Send a name the catalogue does not carry.
-	if _, err := chatPayload(t, client, `{"model":"some-other-model","messages":[{"role":"user","content":"hi"}]}`); err != nil {
+	// Send a name the catalogue does not carry, inside a fresh run.
+	runID, err := client.StartAgentRun(context.Background(), client.BaseURL(), RegisterAgentID)
+	if err != nil {
+		t.Fatalf("starting a run: %v", err)
+	}
+	unknownModelPayload := fmt.Sprintf(`{"model":"some-other-model","messages":[{"role":"user","content":"hi"}],"codebuff_metadata":{"run_id":%q,"client_id":"test-client"}}`, runID)
+	if _, err := chatPayload(t, client, unknownModelPayload); err != nil {
 		t.Fatalf("streaming with an unknown model: %v", err)
 	}
 	if mock.SubstitutedModel() != "some-other-model" {
@@ -433,14 +443,24 @@ func TestFreebuffScriptedFaultsAreScopedToTheirPath(t *testing.T) {
 	if _, err := client.FetchCatalog(context.Background(), server.URL); err != nil {
 		t.Fatalf("the catalogue should be unaffected by a chat fault: %v", err)
 	}
-	payload := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hi"}]}`, MockModelHandle)
-	_, err := client.ChatStream(context.Background(), client.BaseURL(), []byte(payload))
-	if err == nil {
+	// The chat route only accepts a body naming a run the fixture minted, so
+	// the scripted chat payload starts a run first — the same lifecycle every
+	// real client follows.
+	runID, err := client.StartAgentRun(context.Background(), server.URL, RegisterAgentID)
+	if err != nil {
+		t.Fatalf("starting a run: %v", err)
+	}
+	payload := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hi"}],"codebuff_metadata":{"run_id":%q,"client_id":"test-client"}}`, MockModelHandle, runID)
+	requestErr := func() error {
+		_, err := client.ChatStream(context.Background(), client.BaseURL(), []byte(payload))
+		return err
+	}()
+	if requestErr == nil {
 		t.Fatal("the scripted chat fault should have fired")
 	}
-	errText := err.Error()
-	if !strings.Contains(errText, "rate_limited") {
-		t.Fatalf("the error should carry the service's own code, got %v", err)
+	requestErrText := requestErr.Error()
+	if !strings.Contains(requestErrText, "rate_limited") {
+		t.Fatalf("the error should carry the service's own code, got %v", requestErr)
 	}
 	// The fault is consumed, so the next attempt succeeds.
 	if _, err := chatPayload(t, client, payload); err != nil {
