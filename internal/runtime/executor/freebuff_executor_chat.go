@@ -260,7 +260,7 @@ func (e *FreebuffExecutor) executeChat(
 
 	payload, err := freebuffChatCompletionsBody(translated, row.Handle, runID, reasoningEffortFor(row))
 	if err != nil {
-		runStatus = "aborted"
+		runStatus = "failed"
 		return nil, err
 	}
 
@@ -269,7 +269,7 @@ func (e *FreebuffExecutor) executeChat(
 	// base URL carries the chat traffic.
 	body, err := client.ChatStream(ctx, e.catalogBaseURL, payload)
 	if err != nil {
-		runStatus = "aborted"
+		runStatus = "failed"
 		return nil, e.classifyChatError(err)
 	}
 	defer func() {
@@ -287,13 +287,13 @@ func (e *FreebuffExecutor) executeChat(
 		return nil
 	})
 	if scanErr != nil {
-		runStatus = "aborted"
+		runStatus = "failed"
 		if classified := e.classifyChatError(scanErr); !isCredentialLoss(classified) {
 			return nil, classified
 		}
 	}
 	if accumulated.text() == "" && accumulated.reasoningText() == "" {
-		runStatus = "aborted"
+		runStatus = "failed"
 		return nil, freebuffStatusError{code: 502, msg: "freebuff: the stream produced no content"}
 	}
 	return accumulated, nil

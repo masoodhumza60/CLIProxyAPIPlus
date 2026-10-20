@@ -69,9 +69,11 @@ func (c *Client) StartAgentRun(ctx context.Context, base, agentID string) (strin
 	return started.RunID, nil
 }
 
-// FinishAgentRun reports how a run ended. Failures here never fail the chat
-// they close: the answer has already been delivered, and an unfinished run is
-// a bookkeeping gap rather than a caller's problem.
+// FinishAgentRun reports how a run ended. status is one of the service's own
+// outcomes — "completed", "failed" or "cancelled" (anything else is refused
+// by the route's own validation). Failures here never fail the chat they
+// close: the answer has already been delivered, and an unfinished run is a
+// bookkeeping gap rather than a caller's problem.
 func (c *Client) FinishAgentRun(ctx context.Context, base, runID, status string) error {
 	base = strings.TrimRight(strings.TrimSpace(base), "/")
 	if base == "" {
@@ -82,12 +84,13 @@ func (c *Client) FinishAgentRun(ctx context.Context, base, runID, status string)
 	}
 
 	payload, err := json.Marshal(map[string]any{
-		"action":      "FINISH",
-		"runId":       runID,
-		"status":      status,
-		"totalSteps":  1,
-		"steps":       []any{},
-		"creditsUsed": 0,
+		"action":        "FINISH",
+		"runId":         runID,
+		"status":        status,
+		"totalSteps":    1,
+		"steps":         []any{},
+		"directCredits": 0,
+		"totalCredits":  0,
 	})
 	if err != nil {
 		return fmt.Errorf("freebuff: building the run-finish body: %w", err)
