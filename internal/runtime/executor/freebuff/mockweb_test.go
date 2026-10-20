@@ -4,6 +4,9 @@ package freebuff
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -27,84 +30,115 @@ func newMockClient(t *testing.T) (*Client, *MockUpstream, *httptest.Server) {
 // chatAll streams one turn and returns the collected content.
 func chatAll(t *testing.T, client *Client, content string) (*ChatCompletion, error) {
 	t.Helper()
-	body, err := client.ChatStream(context.Background(), ChatRequest{
-		Content: content,
-		Model:   MockModelHandle,
-	})
+	return chatPayload(t, client, fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":%q}]}`, MockModelHandle, content))
+}
+
+// chatPayload streams a pre-rendered request body and returns the collected
+// answer. Sending raw bodies keeps the transport tests honest about what
+// actually crosses the wire.
+func chatPayload(t *testing.T, client *Client, payload string) (*ChatCompletion, error) {
+	t.Helper()
+	body, err := client.ChatStream(context.Background(), client.BaseURL(), []byte(payload))
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = body.Close() }()
 	accumulated := &ChatCompletion{}
-	err = ScanChatEvents(body, func(event ChatEvent) error {
-		accumulated.consume(event)
+	err = ScanChatCompletionEvents(body, func(delta ChatCompletionDelta) error {
+		accumulated.consume(delta)
 		return nil
 	})
 	return accumulated, err
 }
 
-// chatCompletion accumulates a streamed answer in the test package so the
+// ChatCompletion accumulates a streamed answer in the test package so the
 // assertions read against the same accumulation the executor performs.
 type ChatCompletion struct {
 	content   strings.Builder
 	reasoning strings.Builder
 	model     string
-	threadID  string
+	finish    string
+	usage     *ChatCompletionUsage
 }
 
-func (c *ChatCompletion) consume(event ChatEvent) {
-	switch event.Type {
-	case "meta":
-		c.threadID = event.ThreadID
-		c.model = event.Model
-	case "reasoning_delta":
-		c.reasoning.WriteString(event.Text)
-	case "delta":
-		c.content.WriteString(event.Text)
+func (c *ChatCompletion) consume(delta ChatCompletionDelta) {
+	if delta.Model != "" {
+		c.model = delta.Model
+	}
+	c.content.WriteString(delta.Content)
+	c.reasoning.WriteString(delta.Reasoning)
+	if delta.FinishReason != "" {
+		c.finish = delta.FinishReason
+	}
+	if delta.Usage != nil {
+		c.usage = delta.Usage
 	}
 }
 
 func (c *ChatCompletion) text() string          { return c.content.String() }
 func (c *ChatCompletion) reasoningText() string { return c.reasoning.String() }
 
-// TestFreebuffChatRequiresTheSessionCookie pins the authentication the web host
-// uses. A bearer token alone is not accepted, which is the behaviour that makes
-// the web surface distinct from the catalogue host.
-func TestFreebuffChatRequiresTheSessionCookie(t *testing.T) {
+// TestFreebuffChatRequiresBothAuthHeaders pins the authentication the chat host
+// uses: the two headers the catalogue route also requires, either alone
+// refused — which is the behaviour a third-party client meets on the live
+// route.
+func TestFreebuffChatRequiresBothAuthHeaders(t *testing.T) {
 	_, _, server := newMockClient(t)
 
-	req, err := http.NewRequest(http.MethodPost, server.URL+ChatPath, strings.NewReader(`{"content":"hi","model":"x"}`))
-	if err != nil {
-		t.Fatalf("building a request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+MockAPIKey)
+	for name, headers := range map[string][]string{
+		"apiKeyHeaderOnly": {APIKeyHeader},
+		"bearerOnly":       {"Authorization"},
+	} {
+		req, err := http.NewRequest(http.MethodPost, server.URL+ChatPath, strings.NewReader(`{"messages":[]}`))
+		if err != nil {
+			t.Fatalf("building a request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		for _, header := range headers {
+			switch header {
+			case "Authorization":
+				req.Header.Set("Authorization", "Bearer "+MockAPIKey)
+			default:
+				req.Header.Set(header, MockAPIKey)
+			}
+		}
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("calling the fixture: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("a bearer token alone should not authenticate the chat route, got %d", resp.StatusCode)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("calling the fixture: %v", err)
+		}
+		status := resp.StatusCode
+		_ = resp.Body.Close()
+		if status != http.StatusUnauthorized {
+			t.Fatalf("%s: one auth header should not authenticate the chat route, got %d", name, status)
+		}
 	}
 }
 
-// TestFreebuffChatRejectsAnEmptyMessage pins the route's own guard, which is the
-// error a caller sees when a translation produces no prompt.
-func TestFreebuffChatRejectsAnEmptyMessage(t *testing.T) {
+// TestFreebuffChatRejectsAnEmptyRequest pins the client-side guard, which is
+// the error a caller sees when it has nothing to send, and the route's own
+// guard for a body that carries no messages.
+func TestFreebuffChatRejectsAnEmptyRequest(t *testing.T) {
 	client, _, _ := newMockClient(t)
-	_, err := client.ChatStream(context.Background(), ChatRequest{Content: "  ", Model: MockModelHandle})
-	if err == nil {
-		t.Fatal("an empty message should be refused before the request is sent")
-	}
-	if !strings.Contains(err.Error(), "non-empty content") {
+
+	if _, err := client.ChatStream(context.Background(), client.BaseURL(), []byte("   ")); err == nil {
+		t.Fatal("a blank body should be refused before the request is sent")
+	} else if !strings.Contains(err.Error(), "request body") {
 		t.Fatalf("error should name the problem, got %v", err)
+	}
+
+	_, err := chatPayload(t, client, `{"model":"x","messages":[]}`)
+	if err == nil {
+		t.Fatal("a request with no messages should be refused")
+	}
+	if !strings.Contains(err.Error(), "empty_message") {
+		t.Fatalf("the error should carry the service's own code, got %v", err)
 	}
 }
 
 // TestFreebuffChatStreamsTheAnswer checks the transcript is read end to end:
-// reasoning before content, both assembled from several deltas rather than one.
+// reasoning before content, both assembled from several deltas rather than one,
+// with the model the upstream echoed and the usage the final chunk carries.
 func TestFreebuffChatStreamsTheAnswer(t *testing.T) {
 	client, mock, _ := newMockClient(t)
 	accumulated, err := chatAll(t, client, "what is the capital of china")
@@ -118,10 +152,15 @@ func TestFreebuffChatStreamsTheAnswer(t *testing.T) {
 		t.Fatalf("reasoning = %q, want %q", accumulated.reasoningText(), MockReasoning)
 	}
 	if accumulated.model != MockModelDisplay {
-		t.Fatalf("meta should report the model actually used, got %q", accumulated.model)
+		t.Fatalf("the chunks should echo the model actually used, got %q", accumulated.model)
 	}
-	if accumulated.threadID != mockThreadID {
-		t.Fatalf("meta should carry the conversation id, got %q", accumulated.threadID)
+	if accumulated.finish != "stop" {
+		t.Fatalf("the stream should finish normally, got %q", accumulated.finish)
+	}
+	if accumulated.usage == nil {
+		t.Fatal("the final chunk should carry usage")
+	} else if accumulated.usage.PromptTokens == 0 || accumulated.usage.CompletionTokens == 0 {
+		t.Fatalf("usage should be non-zero, got %+v", *accumulated.usage)
 	}
 	if mock.ChatRequests() != 1 {
 		t.Fatalf("the fixture should have answered exactly once, got %d", mock.ChatRequests())
@@ -137,72 +176,98 @@ func TestFreebuffChatReportsSubstitution(t *testing.T) {
 		t.Fatalf("streaming: %v", err)
 	}
 	// Send a name the catalogue does not carry.
-	body, err := client.ChatStream(context.Background(), ChatRequest{Content: "hi", Model: "some-other-model"})
-	if err != nil {
+	if _, err := chatPayload(t, client, `{"model":"some-other-model","messages":[{"role":"user","content":"hi"}]}`); err != nil {
 		t.Fatalf("streaming with an unknown model: %v", err)
 	}
-	_ = body.Close()
 	if mock.SubstitutedModel() != "some-other-model" {
 		t.Fatalf("the fixture should record the substituted name, got %q", mock.SubstitutedModel())
 	}
 }
 
-// TestFreebuffScanChatEventsSkipsUnrecognisedEvents is the regression that keeps
-// an unknown event type from costing a caller an otherwise healthy answer.
-func TestFreebuffScanChatEventsSkipsUnrecognisedEvents(t *testing.T) {
+// TestFreebuffScanChatCompletionEventsSkipsUnreadableChunks is the regression
+// that keeps an undecodable or empty chunk from costing a caller an otherwise
+// healthy answer.
+func TestFreebuffScanChatCompletionEventsSkipsUnreadableChunks(t *testing.T) {
 	transcript := strings.Join([]string{
 		"",
 		": a comment line the scanner should ignore",
 		"data: {not json at all}",
-		`data: {"type":"delta","text":"kept"}`,
+		`data: {"type":null}`,
+		`data: {"unknown_field_certainly_not_a_choice":"kept?"}`,
+		`data: {"model":"m","choices":[{"index":0,"delta":{"content":"kept"}}]}`,
 		"data: [DONE]",
-		`data: {"type":"a_type_this_client_does_not_model","text":"also kept"}`,
+		`data: {"model":"m","choices":[{"index":0,"delta":{"content":"never seen"}}]}`,
 	}, "\n")
 
-	var seen []string
-	err := ScanChatEvents(strings.NewReader(transcript), func(event ChatEvent) error {
-		seen = append(seen, event.Type)
+	var text strings.Builder
+	err := ScanChatCompletionEvents(strings.NewReader(transcript), func(delta ChatCompletionDelta) error {
+		text.WriteString(delta.Content)
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("scanning: %v", err)
 	}
-	if len(seen) != 2 {
-		t.Fatalf("expected two usable events, got %v", seen)
-	}
-	if seen[0] != "delta" {
-		t.Fatalf("the decodable event should survive, got %q", seen[0])
-	}
-	if seen[1] != "a_type_this_client_does_not_model" {
-		t.Fatalf("an unknown event type should still be delivered, got %q", seen[1])
+	if text.String() != "kept" {
+		t.Fatalf("only the decodable chunk should survive, got %q", text.String())
 	}
 }
 
-// TestFreebuffScanChatEventsPropagatesCallbackFailure keeps a caller able to stop
-// a scan, which is how a stream consumer reports its own failure.
-func TestFreebuffScanChatEventsPropagatesCallbackFailure(t *testing.T) {
-	transcript := `data: {"type":"delta","text":"one"}` + "\n" + `data: {"type":"delta","text":"two"}`
+// TestFreebuffScanChatCompletionEventsPropagatesCallbackFailure keeps a caller
+// able to stop a scan, which is how a stream consumer reports its own failure.
+func TestFreebuffScanChatCompletionEventsPropagatesCallbackFailure(t *testing.T) {
+	transcriptLen := strings.Join([]string{
+		`data: {"model":"m","choices":[{"index":0,"delta":{"content":"one"}}]}`,
+		`data: {"model":"m","choices":[{"index":0,"delta":{"content":"two"}}]}`,
+	}, "\n")
 	want := context.Canceled
-	err := ScanChatEvents(strings.NewReader(transcript), func(ChatEvent) error { return want })
+	err := ScanChatCompletionEvents(strings.NewReader(transcriptLen), func(ChatCompletionDelta) error {
+		return want
+	})
 	if err != want {
 		t.Fatalf("the callback's error should reach the caller, got %v", err)
 	}
 }
 
-// TestFreebuffScanChatEventsReportsAnUnknownEventTypeAsFailure marks the events
-// a caller must treat as a failed turn rather than as content.
-func TestFreebuffScanChatEventsReportsAnUnknownEventTypeAsFailure(t *testing.T) {
-	for _, eventType := range []string{"error", "stream_error", "failure"} {
-		event := ChatEvent{Type: eventType, Text: "it broke"}
-		if !event.IsStreamFailure() {
-			t.Fatalf("%q should be recognised as a failure", eventType)
-		}
+// TestFreebuffScanChatCompletionEventsReportsAnInStreamErrorAsFailure turns a
+// failure the service delivers inside the stream into an error rather than
+// content, since a half-answer presented as complete would be worse than the
+// request failing.
+func TestFreebuffScanChatCompletionEventsReportsAnInStreamErrorAsFailure(t *testing.T) {
+	transcript := `data: {"error":{"message":"it broke","code":"boom"}}` + "\n" + `data: {"model":"m","choices":[{"index":0,"delta":{"content":"a partial answer"}}]}`
+	err := ScanChatCompletionEvents(strings.NewReader(transcript), func(ChatCompletionDelta) error {
+		return nil
+	})
+	var se *SessionError
+	if !errors.As(err, &se) {
+		t.Fatalf("an in-stream error should surface as a SessionError, got %v", err)
 	}
-	for _, eventType := range []string{"delta", "reasoning_delta", "meta", "title", "suggestions"} {
-		event := ChatEvent{Type: eventType}
-		if event.IsStreamFailure() {
-			t.Fatalf("%q should not be mistaken for a failure", eventType)
-		}
+	if se.Message != "it broke" {
+		t.Fatalf("the error should carry the service's message, got %q", se.Message)
+	}
+	if se.StatusCode() != http.StatusBadGateway {
+		t.Fatalf("an in-stream error is an upstream failure, got %d", se.StatusCode())
+	}
+}
+
+// TestFreebuffScanChatCompletionEventsStopsAtDone pins that [DONE] ends the
+// scan rather than being an error, with nothing after it delivered.
+func TestFreebuffScanChatCompletionEventsStopsAtDone(t *testing.T) {
+	transcript := strings.Join([]string{
+		`data: {"model":"m","choices":[{"index":0,"delta":{"content":"kept"}}]}`,
+		"data: [DONE]",
+		`data: {"model":"m","choices":[{"index":0,"delta":{"content":"ignore me"}}]}`,
+	}, "\n")
+
+	var text strings.Builder
+	err := ScanChatCompletionEvents(strings.NewReader(transcript), func(delta ChatCompletionDelta) error {
+		text.WriteString(delta.Content)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scanning: %v", err)
+	}
+	if text.String() != "kept" {
+		t.Fatalf("only pre-done content should be delivered, got %q", text.String())
 	}
 }
 
@@ -333,72 +398,20 @@ func TestFreebuffCatalogResolveSkipsALockedRecommendation(t *testing.T) {
 	}
 }
 
-// TestFreebuffThreadsReadsConversationHistory covers the surface that proves a
-// follow-up turn can be attributed to the conversation it belongs to.
-func TestFreebuffThreadsReadsConversationHistory(t *testing.T) {
-	client, _, _ := newMockClient(t)
-
-	threads, err := client.ListThreads(context.Background())
-	if err != nil {
-		t.Fatalf("listing threads: %v", err)
-	}
-	if len(threads) != 1 || threads[0].ID != mockThreadID {
-		t.Fatalf("expected the fixture's one conversation, got %+v", threads)
-	}
-
-	thread, err := client.GetThread(context.Background(), mockThreadID)
-	if err != nil {
-		t.Fatalf("reading a thread: %v", err)
-	}
-	if len(thread.Messages) != 2 {
-		t.Fatalf("expected a user turn and an assistant turn, got %d", len(thread.Messages))
-	}
-	assistant := thread.Messages[1]
-	if assistant.Role != "assistant" {
-		t.Fatalf("the second message should be the assistant's, got %q", assistant.Role)
-	}
-	if assistant.Content != MockReply {
-		t.Fatalf("the assistant's content should be the answer, got %q", assistant.Content)
-	}
-	// The block taxonomy is the part no other surface exposes.
-	var reasoning, text, suggestions int
-	for _, block := range assistant.Blocks {
-		switch block.Type {
-		case "thinking":
-			reasoning++
-		case "text":
-			text++
-		case "suggestions":
-			suggestions++
-			if len(block.Followups) != 1 {
-				t.Fatalf("a suggestions block should carry its followups, got %d", len(block.Followups))
-			}
-		}
-	}
-	if reasoning != 1 || text != 1 || suggestions != 1 {
-		t.Fatalf("block taxonomy changed: thinking=%d text=%d suggestions=%d", reasoning, text, suggestions)
-	}
-}
-
-// TestFreebuffGetThreadRejectsABlankID keeps a missing id from becoming a request
-// for the thread list.
-func TestFreebuffGetThreadRejectsABlankID(t *testing.T) {
-	client, _, _ := newMockClient(t)
-	if _, err := client.GetThread(context.Background(), "   "); err == nil {
-		t.Fatal("a blank thread id should be refused")
-	}
-}
-
-// TestFreebuffExpiredSessionIsNamedAsSuch pins the operator-facing message. The
-// token has a finite life, so telling someone to retry is useless advice when
-// what they must do is log in again.
-func TestFreebuffExpiredSessionIsNamedAsSuch(t *testing.T) {
+// TestFreebuffMissingTokenIsNamed pins the operator-facing message. The token
+// has a finite life, so telling someone to retry is useless advice when what
+// they must do is log in again.
+func TestFreebuffMissingTokenIsNamed(t *testing.T) {
 	_, _, server := newMockClient(t)
 	client, err := NewLoginClient(server.URL, Options{Sleep: func(time.Duration) {}})
 	if err != nil {
 		t.Fatalf("building a client: %v", err)
 	}
-	_, err = client.ChatStream(context.Background(), ChatRequest{Content: "hi", Model: MockModelHandle})
+	payload, err := json.Marshal(map[string]any{"model": MockModelHandle, "messages": []any{map[string]any{"role": "user", "content": "hi"}}})
+	if err != nil {
+		t.Fatalf("building a payload: %v", err)
+	}
+	_, err = client.ChatStream(context.Background(), client.BaseURL(), payload)
 	if err == nil {
 		t.Fatal("a client with no token should be refused")
 	}
@@ -420,15 +433,17 @@ func TestFreebuffScriptedFaultsAreScopedToTheirPath(t *testing.T) {
 	if _, err := client.FetchCatalog(context.Background(), server.URL); err != nil {
 		t.Fatalf("the catalogue should be unaffected by a chat fault: %v", err)
 	}
-	_, err := client.ChatStream(context.Background(), ChatRequest{Content: "hi", Model: MockModelHandle})
+	payload := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hi"}]}`, MockModelHandle)
+	_, err := client.ChatStream(context.Background(), client.BaseURL(), []byte(payload))
 	if err == nil {
 		t.Fatal("the scripted chat fault should have fired")
 	}
-	if !strings.Contains(err.Error(), "rate_limited") {
+	errText := err.Error()
+	if !strings.Contains(errText, "rate_limited") {
 		t.Fatalf("the error should carry the service's own code, got %v", err)
 	}
 	// The fault is consumed, so the next attempt succeeds.
-	if _, err := chatAll(t, client, "hi"); err != nil {
+	if _, err := chatPayload(t, client, payload); err != nil {
 		t.Fatalf("the fault should have been consumed once: %v", err)
 	}
 }
@@ -441,7 +456,6 @@ func TestFreebuffUnknownRouteIsNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("building a request: %v", err)
 	}
-	req.AddCookie(&http.Cookie{Name: SessionCookie, Value: MockAPIKey})
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("calling the fixture: %v", err)

@@ -17,10 +17,10 @@ import (
 // `-tags freebuffmock` the type does not exist, so nothing can reach it.
 //
 // The fixture is deliberately strict rather than accommodating. Every gate the
-// real service enforces is enforced here — the session cookie on the web host,
-// both auth headers on the catalogue host, and a model that must come from the
-// catalogue — so a client that forgets one fails against this fixture instead of
-// in production. A permissive fixture would let a real defect through.
+// real service enforces is enforced here — the bearer token plus the API-key
+// header on every authenticated route, and a model that must come from the
+// catalogue — so a client that forgets one fails against this fixture instead
+// of in production. A permissive fixture would let a real defect through.
 //
 // The transcripts here were captured from the live service rather than written
 // from the protocol description, because an earlier fixture in this repository
@@ -48,9 +48,6 @@ const (
 // mockLockedModelKey is a row the account may not run. It exists so a client
 // cannot pass by ignoring the access flag and offering every row it is given.
 const mockLockedModelKey = "m-mocklocked01"
-
-// mockThreadID is the conversation the fixture answers in.
-const mockThreadID = "1d0e6f7a-4b21-4c33-9a5e-6b7c8d9e0f11"
 
 // mockCatalog is the catalogue the fixture serves, shaped like the live
 // response: a protocol version, an access tier encoded in the version string, a
@@ -100,27 +97,47 @@ func mockCatalog(refreshAt int64) string {
 	return mustMockJSON(catalog)
 }
 
-// mockStream is the SSE transcript the fixture answers with, in the order the
-// live service emits it: a meta line naming the model actually used, a title,
-// reasoning deltas, answer deltas, and finally a suggestions block.
+// mockStream is the SSE transcript the fixture answers with, in the shape the
+// upstream's chat-completions stream uses: reasoning deltas ahead of the
+// answer, a terminating chunk, a usage chunk, and [DONE].
 func mockStream(model string) string {
-	lines := []string{
-		mockEvent(map[string]any{"type": "meta", "threadId": mockThreadID, "title": "prompt", "model": model, "accessTier": "limited"}),
-		mockEvent(map[string]any{"type": "title", "threadId": mockThreadID, "title": "Mock conversation"}),
-	}
+	var lines []string
 	for _, part := range splitMockText(MockReasoning) {
-		lines = append(lines, mockEvent(map[string]any{"type": "reasoning_delta", "text": part}))
+		lines = append(lines, mockEvent(map[string]any{
+			"model": model,
+			"choices": []map[string]any{{
+				"index": 0,
+				"delta": map[string]any{"reasoning_content": part},
+			}},
+		}))
 	}
 	for _, part := range splitMockText(MockReply) {
-		lines = append(lines, mockEvent(map[string]any{"type": "delta", "text": part}))
+		lines = append(lines, mockEvent(map[string]any{
+			"model": model,
+			"choices": []map[string]any{{
+				"index": 0,
+				"delta": map[string]any{"content": part},
+			}},
+		}))
 	}
 	lines = append(lines, mockEvent(map[string]any{
-		"type":       "suggestions",
-		"toolCallId": "mock-tool-call",
-		"followups": []map[string]string{
-			{"label": "More", "prompt": "Tell me more"},
+		"model": model,
+		"choices": []map[string]any{{
+			"index":         0,
+			"delta":         map[string]any{},
+			"finish_reason": "stop",
+		}},
+	}))
+	lines = append(lines, mockEvent(map[string]any{
+		"model":   model,
+		"choices": []any{},
+		"usage": map[string]any{
+			"prompt_tokens":     12,
+			"completion_tokens": 5,
+			"total_tokens":      17,
 		},
 	}))
+	lines = append(lines, "data: [DONE]")
 	return strings.Join(lines, "\n\n") + "\n\n"
 }
 
@@ -173,8 +190,6 @@ type MockUpstream struct {
 	substitutedFor string
 	// chatRequests counts accepted completions.
 	chatRequests int
-	// threads records conversations the fixture answered in.
-	threads []string
 	// faults is a FIFO queue of scripted failures.
 	faults []mockFault
 	// streamsSeen counts how many SSE bodies were written.
@@ -254,8 +269,6 @@ func (m *MockUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.serveCatalog(w, r)
 	case ChatPath:
 		m.serveChat(w, r)
-	case ThreadsPath, ThreadsPath + "/" + mockThreadID:
-		m.serveThreads(w, r)
 	default:
 		writeMockJSON(w, http.StatusNotFound, map[string]any{"error": "not_found"})
 	}
@@ -360,12 +373,12 @@ func (m *MockUpstream) serveCatalog(w http.ResponseWriter, r *http.Request) {
 
 // serveChat answers a streaming completion.
 //
-// The web host authenticates with the session cookie rather than a bearer
-// token, which is the behaviour the live service has: the same token the login
-// flow returns is accepted in that cookie.
+// The chat route requires the same two auth headers the catalogue route does,
+// which is the behaviour the live service has: a bearer token alone is
+// refused.
 func (m *MockUpstream) serveChat(w http.ResponseWriter, r *http.Request) {
-	cookie, err := r.Cookie(SessionCookie)
-	if err != nil || cookie.Value != MockAPIKey {
+	bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if bearer != MockAPIKey || r.Header.Get(APIKeyHeader) != MockAPIKey {
 		writeMockJSON(w, http.StatusUnauthorized, map[string]any{
 			"error":   "unauthorized",
 			"message": "Please sign in to chat.",
@@ -378,9 +391,8 @@ func (m *MockUpstream) serveChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var payload struct {
-		ThreadID *string `json:"threadId"`
-		Content  string  `json:"content"`
-		Model    string  `json:"model"`
+		Model    string `json:"model"`
+		Messages []any  `json:"messages"`
 	}
 	body, err := readMockBody(r)
 	if err != nil {
@@ -397,7 +409,7 @@ func (m *MockUpstream) serveChat(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if strings.TrimSpace(payload.Content) == "" {
+	if len(payload.Messages) == 0 {
 		writeMockJSON(w, http.StatusBadRequest, map[string]any{
 			"error":   "empty_message",
 			"message": "Message cannot be empty.",
@@ -417,7 +429,6 @@ func (m *MockUpstream) serveChat(w http.ResponseWriter, r *http.Request) {
 	m.mu.Lock()
 	m.chatRequests++
 	m.streamsSeen++
-	m.threads = append(m.threads, mockThreadID)
 	m.mu.Unlock()
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -426,70 +437,12 @@ func (m *MockUpstream) serveChat(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(mockStream(MockModelDisplay)))
 }
 
-// serveThreads answers the conversation endpoints.
-func (m *MockUpstream) serveThreads(w http.ResponseWriter, r *http.Request) {
-	if cookie, err := r.Cookie(SessionCookie); err != nil || cookie.Value != MockAPIKey {
-		writeMockJSON(w, http.StatusUnauthorized, map[string]any{
-			"error":   "unauthorized",
-			"message": "Please sign in to chat.",
-		})
-		return
-	}
-	if r.Method == http.MethodGet && r.URL.Path == ThreadsPath {
-		writeMockJSON(w, http.StatusOK, map[string]any{
-			"threads": []map[string]any{{
-				"id":         mockThreadID,
-				"title":      "Mock conversation",
-				"model":      MockModelDisplay,
-				"updated_at": time.Now().UTC().Format(time.RFC3339Nano),
-			}},
-			"accessTier": "limited",
-		})
-		return
-	}
-	writeMockJSON(w, http.StatusOK, map[string]any{
-		"thread": map[string]any{
-			"id":         mockThreadID,
-			"title":      "Mock conversation",
-			"model":      MockModelDisplay,
-			"created_at": time.Now().UTC().Format(time.RFC3339Nano),
-			"updated_at": time.Now().UTC().Format(time.RFC3339Nano),
-		},
-		"messages": []map[string]any{
-			{
-				"id":      "mock-user-message",
-				"role":    "user",
-				"content": "prompt",
-				"model":   nil,
-			},
-			{
-				"id":      "mock-assistant-message",
-				"role":    "assistant",
-				"content": MockReply,
-				"model":   MockModelDisplay,
-				"blocks": []map[string]any{
-					{"text": MockReasoning, "type": "thinking", "status": "done"},
-					{"text": MockReply, "type": "text"},
-					{
-						"type":       "suggestions",
-						"toolCallId": "mock-tool-call",
-						"followups":  []map[string]string{{"label": "More", "prompt": "Tell me more"}},
-					},
-				},
-			},
-		},
-	})
-}
-
 // CatalogPathForTest exposes the catalogue path so a test can scope a fault
 // without duplicating the constant.
 func CatalogPathForTest() string { return CatalogPath }
 
 // ChatPathForTest exposes the chat path for the same reason.
 func ChatPathForTest() string { return ChatPath }
-
-// ThreadsPathForTest exposes the threads path for the same reason.
-func ThreadsPathForTest() string { return ThreadsPath }
 
 func mustMockJSON(value any) string {
 	encoded, err := json.Marshal(value)

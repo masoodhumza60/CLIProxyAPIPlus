@@ -22,6 +22,17 @@ func requireSessionError(t *testing.T, err error) (*SessionError, bool) {
 	return se, true
 }
 
+// freebuffTestClient builds a client pointed at a test server, with the sleep
+// hook stubbed so retries do not slow the tests.
+func freebuffTestClient(t *testing.T, srv *httptest.Server) *Client {
+	t.Helper()
+	client, err := NewClient(srv.URL, "test-key", Options{Sleep: func(time.Duration) {}, Now: time.Now})
+	if err != nil {
+		t.Fatalf("building a client: %v", err)
+	}
+	return client
+}
+
 func TestFreebuffTokenCountSendsDocumentedBody(t *testing.T) {
 	var gotMethod, gotPath string
 	var gotBody map[string]any

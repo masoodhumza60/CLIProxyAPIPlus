@@ -13,13 +13,14 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
-// This file drives the Freebuff web chat route.
+// This file drives the Freebuff chat route on the Codebuff API host.
 //
-// The public Codebuff chat API refuses every third-party client, so the executor
-// speaks the web app's own streaming route instead. Two consequences shape the
-// code: the answer arrives as a sequence of deltas rather than one JSON body, so
-// a non-streaming request accumulates them; and the route authenticates with a
-// session cookie rather than a bearer token.
+// The route is OpenAI-compatible, so the translated OpenAI body is sent almost
+// verbatim and the answer arrives as OpenAI-style delta chunks. The request
+// always asks to stream, which leaves one parsing path for both delivery
+// modes: a non-streaming request accumulates the deltas rather than following
+// a second code path, and the upstream-specific adjustments are limited to
+// naming the model by its catalogue handle.
 
 // freebuffCatalogHost is the Codebuff API origin that serves the model
 // catalogue. It is deliberately a named constant rather than inferred from the
@@ -48,32 +49,27 @@ const freebuffSessionExpiredMessage = "freebuff session expired; run `freebuff l
 // nothing in the type requires that, and a shared accumulator is the easiest
 // place for a future concurrent reader to race.
 type chatCompletion struct {
-	content   strings.Builder
-	reasoning strings.Builder
-	threadID  string
-	model     string
-	title     string
+	content      strings.Builder
+	reasoning    strings.Builder
+	model        string
+	finishReason string
+	usage        *freebuff.ChatCompletionUsage
+	// promptEstimate is filled in by the caller so a non-streaming response
+	// can still carry a prompt token count when the service reports none.
+	promptEstimate int
 }
 
-func (c *chatCompletion) consume(event freebuff.ChatEvent) {
-	switch {
-	case strings.Contains(event.Type, "error") || strings.Contains(event.Type, "fail"):
-		// Reported through the caller's error path rather than accumulated as
-		// content: a partial answer that silently omitted the failure would be
-		// worse than failing the request.
-	case event.Type == "meta":
-		c.threadID = event.ThreadID
-		if event.Model != "" {
-			c.model = event.Model
-		}
-	case event.Type == "title":
-		if event.Title != "" {
-			c.title = event.Title
-		}
-	case event.Type == "reasoning_delta":
-		c.reasoning.WriteString(event.Text)
-	case event.Type == "delta":
-		c.content.WriteString(event.Text)
+func (c *chatCompletion) consume(delta freebuff.ChatCompletionDelta) {
+	if delta.Model != "" {
+		c.model = delta.Model
+	}
+	c.content.WriteString(delta.Content)
+	c.reasoning.WriteString(delta.Reasoning)
+	if delta.FinishReason != "" {
+		c.finishReason = delta.FinishReason
+	}
+	if delta.Usage != nil {
+		c.usage = delta.Usage
 	}
 }
 
@@ -84,8 +80,8 @@ func (c *chatCompletion) reasoningText() string { return c.reasoning.String() }
 // nonStreamResponse renders the accumulated answer as an OpenAI-shaped chat
 // completion.
 //
-// Usage is estimated rather than reported: the web route streams no token
-// counts, and inventing zeroes would make a caller believe a request was free.
+// Usage is the count the service reported when it reports one, and an estimate
+// otherwise; inventing zeroes would make a caller believe a request was free.
 func (c *chatCompletion) nonStreamResponse(id, requestedModel string) []byte {
 	model := c.model
 	if model == "" {
@@ -98,8 +94,11 @@ func (c *chatCompletion) nonStreamResponse(id, requestedModel string) []byte {
 		// unaffected.
 		message["reasoning_content"] = reasoning
 	}
-	promptTokens := freebuffEstimateTokens(c.title) + freebuffEstimateTokens(c.reasoningText())
-	completionTokens := freebuffEstimateTokens(c.text())
+	finish := c.finishReason
+	if finish == "" {
+		finish = "stop"
+	}
+	promptTokens, completionTokens := c.usageTokens()
 	payload := map[string]any{
 		"id":      id,
 		"object":  "chat.completion",
@@ -108,7 +107,7 @@ func (c *chatCompletion) nonStreamResponse(id, requestedModel string) []byte {
 		"choices": []any{map[string]any{
 			"index":         0,
 			"message":       message,
-			"finish_reason": "stop",
+			"finish_reason": finish,
 		}},
 		"usage": map[string]any{
 			"prompt_tokens":     promptTokens,
@@ -121,6 +120,19 @@ func (c *chatCompletion) nonStreamResponse(id, requestedModel string) []byte {
 		return nil
 	}
 	return encoded
+}
+
+// usageTokens returns the token counts to report: the service's own numbers
+// when the stream carried them, otherwise character-based estimates.
+//
+// The prompt estimate comes from the request rather than from nothing, and the
+// completion estimate keeps the reasoning trace in the total so a caller that
+// budgets from these numbers is not surprised by the reasoning cost.
+func (c *chatCompletion) usageTokens() (int, int) {
+	if c.usage != nil {
+		return c.usage.PromptTokens, c.usage.CompletionTokens
+	}
+	return c.promptEstimate, freebuffEstimateTokens(c.text()) + freebuffEstimateTokens(c.reasoningText())
 }
 
 // freebuffEstimateTokens is a deliberately rough character-based estimate.
@@ -137,68 +149,73 @@ func freebuffEstimateTokens(text string) int {
 	return (len([]rune(text)) + 3) / 4
 }
 
-// freebuffChatRequestFor renders a translated OpenAI request into the body the
-// web route accepts.
+// freebuffChatCompletionsBody renders the translated OpenAI request into the
+// body the chat route accepts.
 //
-// The route takes a single prompt string rather than a message array, so the
-// conversation is flattened with role prefixes. Tool definitions are not
-// forwarded: the route has no tool channel, and passing OpenAI tool schemas into
-// a field that expects a prompt would corrupt the prompt itself.
-func freebuffChatRequestFor(translated []byte, threadID, model string, reasoningEffort *string) (freebuff.ChatRequest, error) {
-	var payload struct {
+// The route is OpenAI-compatible, so the translated body travels almost
+// verbatim. The executor names the model by its catalogue handle — a name the
+// caller sent verbatim would otherwise be substituted silently — and always
+// asks to stream, which leaves one parsing path for both delivery modes.
+//
+// The catalogue's declared effort is forwarded as reasoning_effort because the
+// upstream prices and floors models by effort; an effort chosen without
+// consulting the catalogue would silently spend more than the account has to.
+func freebuffChatCompletionsBody(translated []byte, model string, reasoningEffort *string) ([]byte, error) {
+	var body map[string]any
+	if err := json.Unmarshal(translated, &body); err != nil {
+		return nil, fmt.Errorf("freebuff: reading the translated request: %w", err)
+	}
+	if body == nil {
+		body = map[string]any{}
+	}
+	messages, ok := body["messages"].([]any)
+	if !ok || len(messages) == 0 {
+		return nil, fmt.Errorf("freebuff: the request carried no message content")
+	}
+	if strings.TrimSpace(model) != "" {
+		body["model"] = model
+	}
+	body["stream"] = true
+	if reasoningEffort != nil && strings.TrimSpace(*reasoningEffort) != "" {
+		body["reasoning_effort"] = *reasoningEffort
+	}
+	return json.Marshal(body)
+}
+
+// freebuffPromptEstimate estimates the request's prompt size, which stands in
+// for the prompt token count when the service reports none. Message content
+// that arrives as an array (image inputs and the like) contributes only its
+// string part, and a request that adds up to nothing falls back to estimating
+// from the whole body rather than reporting an empty prompt.
+func freebuffPromptEstimate(translated []byte) int {
+	var body struct {
 		Messages []struct {
-			Role    string `json:"role"`
 			Content string `json:"content"`
 		} `json:"messages"`
 	}
-	if err := json.Unmarshal(translated, &payload); err != nil {
-		return freebuff.ChatRequest{}, fmt.Errorf("freebuff: reading the translated request: %w", err)
+	if err := json.Unmarshal(translated, &body); err != nil {
+		return 0
 	}
-
-	var prompt strings.Builder
-	for _, message := range payload.Messages {
-		content := strings.TrimSpace(message.Content)
-		if content == "" {
-			continue
-		}
-		role := strings.TrimSpace(message.Role)
-		if role == "" {
-			role = "user"
-		}
-		if prompt.Len() > 0 {
-			prompt.WriteString("\n\n")
-		}
-		prompt.WriteString(role)
-		prompt.WriteString(": ")
-		prompt.WriteString(content)
+	var text strings.Builder
+	for _, message := range body.Messages {
+		text.WriteString(message.Content)
 	}
-	if prompt.Len() == 0 {
-		return freebuff.ChatRequest{}, fmt.Errorf("freebuff: the request carried no message content")
+	if text.Len() == 0 {
+		return freebuffEstimateTokens(string(translated))
 	}
-
-	req := freebuff.ChatRequest{
-		Content:         prompt.String(),
-		Model:           model,
-		ReasoningEffort: reasoningEffort,
-	}
-	if strings.TrimSpace(threadID) != "" {
-		id := threadID
-		req.ThreadID = &id
-	}
-	return req, nil
+	return freebuffEstimateTokens(text.String())
 }
 
 // executeChat runs one chat turn and returns the accumulated answer.
 //
-// Shared by the streaming and non-streaming paths so both agree on how a prompt
-// is rendered, which model is resolved, and how a mid-stream failure is
-// classified. Only the delivery differs.
+// Shared by the streaming and non-streaming paths so both agree on how the
+// request is rendered, which model is resolved, and how a mid-stream failure
+// is classified. Only the delivery differs.
 func (e *FreebuffExecutor) executeChat(
 	ctx context.Context,
 	client *freebuff.Client,
 	translated []byte,
 	req cliproxyexecutor.Request,
-	threadID string,
 	onDelta func(content, reasoning string),
 ) (*chatCompletion, error) {
 	catalog, err := client.FetchCatalog(ctx, e.catalogBaseURL)
@@ -214,12 +231,15 @@ func (e *FreebuffExecutor) executeChat(
 		}
 	}
 
-	chatReq, err := freebuffChatRequestFor(translated, threadID, row.Handle, reasoningEffortFor(row))
+	payload, err := freebuffChatCompletionsBody(translated, row.Handle, reasoningEffortFor(row))
 	if err != nil {
 		return nil, err
 	}
 
-	body, err := client.ChatStream(ctx, chatReq)
+	// The chat route lives on the same Codebuff origin as the catalogue, and
+	// a test serves both legs from one fixture, which is why the catalogue
+	// base URL carries the chat traffic.
+	body, err := client.ChatStream(ctx, e.catalogBaseURL, payload)
 	if err != nil {
 		return nil, e.classifyChatError(err)
 	}
@@ -229,21 +249,12 @@ func (e *FreebuffExecutor) executeChat(
 		}
 	}()
 
-	accumulated := &chatCompletion{}
-	scanErr := freebuff.ScanChatEvents(body, func(event freebuff.ChatEvent) error {
-		if event.IsStreamFailure() {
-			return freebuffStatusError{
-				code: 502,
-				msg:  "freebuff: the stream reported a failure: " + strings.TrimSpace(event.Text),
-			}
+	accumulated := &chatCompletion{promptEstimate: freebuffPromptEstimate(payload)}
+	scanErr := freebuff.ScanChatCompletionEvents(body, func(delta freebuff.ChatCompletionDelta) error {
+		if onDelta != nil && (delta.Content != "" || delta.Reasoning != "") {
+			onDelta(delta.Content, delta.Reasoning)
 		}
-		if event.Type == "delta" && onDelta != nil && event.Text != "" {
-			onDelta(event.Text, "")
-		}
-		if event.Type == "reasoning_delta" && onDelta != nil && event.Text != "" {
-			onDelta("", event.Text)
-		}
-		accumulated.consume(event)
+		accumulated.consume(delta)
 		return nil
 	})
 	if scanErr != nil {
@@ -259,9 +270,9 @@ func (e *FreebuffExecutor) executeChat(
 
 // reasoningEffortFor picks the effort to request for a catalogue row.
 //
-// The route accepts null, and the catalogue names a default per model. Sending
-// a default the account did not ask for would silently spend more than intended,
-// so the row's own default is only used when the model actually declares one.
+// The catalogue names a default per model. Sending a default the account did
+// not ask for would silently spend more than intended, so the row's own
+// default is only used when the model actually declares one.
 func reasoningEffortFor(row freebuff.CatalogRow) *string {
 	if len(row.Efforts) == 0 {
 		return nil

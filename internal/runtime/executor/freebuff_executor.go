@@ -235,11 +235,11 @@ func (e *FreebuffExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth,
 	}
 	reporter.SetTranslatedReasoningEffort(translated, sdktranslator.FormatOpenAI.String())
 
-	// The web route streams its answer, so a non-streaming request accumulates
-	// the deltas rather than receiving one JSON body. There is no run lifecycle
-	// to retry here: the route is idempotent per conversation, and a retried
-	// turn would appear twice in the thread history.
-	completion, chatErr := e.executeChat(ctx, client, translated, req, freebuffThreadID(ctx, opts), nil)
+	// The upstream always streams its answer, so a non-streaming request
+	// accumulates the deltas rather than receiving one JSON body. There is no
+	// upstream turn to retry here: a retried request would be answered again,
+	// so a failure after content starts flowing is surfaced as-is.
+	completion, chatErr := e.executeChat(ctx, client, translated, req, nil)
 	if chatErr != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, chatErr)
 		return cliproxyexecutor.Response{}, chatErr
@@ -264,30 +264,11 @@ func (e *FreebuffExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth,
 	return cliproxyexecutor.Response{Payload: out}, nil
 }
 
-// freebuffThreadID returns the conversation to continue, if the caller supplied
-// one. An empty result starts a new conversation, which is the default: the
-// proxy holds no conversation state between requests, so a caller that wants a
-// follow-up turn must name the thread.
-func freebuffThreadID(_ context.Context, opts cliproxyexecutor.Options) string {
-	if opts.Metadata == nil {
-		return ""
-	}
-	for _, key := range []string{"freebuff_thread_id", "thread_id"} {
-		if value, ok := opts.Metadata[key].(string); ok {
-			if trimmed := strings.TrimSpace(value); trimmed != "" {
-				return trimmed
-			}
-		}
-	}
-	return ""
-}
-
 // freebuffCompletionID derives a stable identifier for one answer from the
-// conversation and answer text, so a retry of the same turn does not produce a
-// different id for the same content.
+// answer text, so a retry of the same turn does not produce a different id for
+// the same content.
 func freebuffCompletionID(completion *chatCompletion) string {
-	seed := completion.threadID + "|" + completion.text()
-	digest := fnv64(seed)
+	digest := fnv64(completion.text())
 	return fmt.Sprintf("chatcmpl-freebuff-%016x", digest)
 }
 
@@ -326,8 +307,8 @@ func (e *FreebuffExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 	}
 	reporter.SetTranslatedReasoningEffort(translated, sdktranslator.FormatOpenAI.String())
 
-	// The web route reports no token counts, so usage is estimated from the
-	// accumulated text and published once the stream ends.
+	// Token counts arrive in the final chunk when the service reports them;
+	// the usage buffer publishes whatever was observed once the stream ends.
 	var streamUsage helps.StreamUsageBuffer
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {
@@ -343,7 +324,7 @@ func (e *FreebuffExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 			return
 		}
 
-		_, chatErr := e.executeChat(ctx, client, translated, req, freebuffThreadID(ctx, opts), func(content, reasoning string) {
+		_, chatErr := e.executeChat(ctx, client, translated, req, func(content, reasoning string) {
 			chunk := e.streamChunk("", req.Model, content, reasoning, false)
 			if chunk.Err != nil {
 				log.WithError(chunk.Err).Debug("freebuff: encoding a stream chunk")

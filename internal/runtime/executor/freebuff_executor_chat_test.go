@@ -383,88 +383,75 @@ func TestFreebuffExecutorStreamClosesWhenTheCallerDisconnects(t *testing.T) {
 	}
 }
 
-// TestFreebuffExecutorContinuesAThread checks the conversation id is carried
-// through, which is what makes a follow-up turn part of the same conversation.
-func TestFreebuffExecutorContinuesAThread(t *testing.T) {
-	executor, _, baseURL := newFreebuffFixture(t)
-	opts := freebuffTestOptions()
-	opts.Metadata = map[string]any{"freebuff_thread_id": "thread-abc"}
-
-	if got := freebuffThreadID(context.Background(), opts); got != "thread-abc" {
-		t.Fatalf("thread id = %q, want the one supplied", got)
-	}
-	if _, err := executor.Execute(context.Background(), freebuffTestAuth(baseURL),
-		freebuffTestRequest(freebuff.MockModelDisplay), opts); err != nil {
-		t.Fatalf("Execute with a thread: %v", err)
-	}
-}
-
-// TestFreebuffThreadIDDefaultsToANewConversation keeps an absent thread from
-// being turned into an empty id sent to the service.
-func TestFreebuffThreadIDDefaultsToANewConversation(t *testing.T) {
-	cases := []struct {
-		name     string
-		metadata map[string]any
-	}{
-		{"no metadata", nil},
-		{"empty metadata", map[string]any{}},
-		{"blank value", map[string]any{"freebuff_thread_id": "   "}},
-		{"wrong type", map[string]any{"freebuff_thread_id": 42}},
-	}
-	for _, testCase := range cases {
-		t.Run(testCase.name, func(t *testing.T) {
-			opts := cliproxyexecutor.Options{Metadata: testCase.metadata}
-			if got := freebuffThreadID(context.Background(), opts); got != "" {
-				t.Fatalf("thread id = %q, want empty so a new conversation starts", got)
-			}
-		})
-	}
-}
-
-// TestFreebuffChatRequestForFlattensTheConversation pins the shape the web route
-// takes: one prompt string, with the role kept so the model can still tell whose
-// turn it is.
-func TestFreebuffChatRequestForFlattensTheConversation(t *testing.T) {
-	translated := []byte(`{"messages":[{"role":"system","content":"be brief"},{"role":"user","content":"hello"},{"role":"assistant","content":"hi"},{"role":"user","content":"and again"}]}`)
-	request, err := freebuffChatRequestFor(translated, "", "model", nil)
+// TestFreebuffChatCompletionsBodyPinsTheRequestShape pins the shape the chat
+// route takes: the translated OpenAI body travelling verbatim, streamed, with
+// the model named by its catalogue handle.
+func TestFreebuffChatCompletionsBodyPinsTheRequestShape(t *testing.T) {
+	translated := []byte(`{"model":"ignored","messages":[{"role":"user","content":"hello"}],"temperature":0.2}`)
+	payload, err := freebuffChatCompletionsBody(translated, "fbm1.HANDLE", nil)
 	if err != nil {
-		t.Fatalf("building the chat request: %v", err)
+		t.Fatalf("building the body: %v", err)
 	}
-	if request.ThreadID != nil {
-		t.Fatalf("a new conversation should send a null thread id, got %q", *request.ThreadID)
+	var body map[string]any
+	if err := json.Unmarshal(payload, &body); err != nil {
+		t.Fatalf("decoding the body: %v", err)
 	}
-	for _, want := range []string{"system: be brief", "user: hello", "assistant: hi", "user: and again"} {
-		if !strings.Contains(request.Content, want) {
-			t.Fatalf("prompt should carry %q, got %q", want, request.Content)
-		}
+	if body["model"] != "fbm1.HANDLE" {
+		t.Fatalf("model = %#v, want the catalogue handle", body["model"])
 	}
-	if request.Model != "model" {
-		t.Fatalf("model = %q, want the requested one", request.Model)
+	if body["stream"] != true {
+		t.Fatalf("stream = %#v, want true so the answer arrives as deltas", body["stream"])
+	}
+	if body["temperature"] != 0.2 {
+		t.Fatalf("temperature = %#v, want the translated value kept verbatim", body["temperature"])
+	}
+	messages, ok := body["messages"].([]any)
+	if !ok || len(messages) != 1 {
+		t.Fatalf("messages = %#v, want the translated ones kept verbatim", body["messages"])
 	}
 }
 
-// TestFreebuffChatRequestForCarriesAnExistingThread keeps a follow-up turn in
-// its conversation.
-func TestFreebuffChatRequestForCarriesAnExistingThread(t *testing.T) {
-	translated := []byte(`{"messages":[{"role":"user","content":"again"}]}`)
-	request, err := freebuffChatRequestFor(translated, "thread-1", "model", nil)
+// TestFreebuffChatCompletionsBodyCarriesReasoningEffort forwards the effort the
+// catalogue declared, which is how the account trades cost for speed, and omits
+// the field entirely when there is no effort to send.
+func TestFreebuffChatCompletionsBodyCarriesReasoningEffort(t *testing.T) {
+	translated := []byte(`{"messages":[{"role":"user","content":"hello"}]}`)
+	effort := "high"
+	payload, err := freebuffChatCompletionsBody(translated, "model", &effort)
 	if err != nil {
-		t.Fatalf("building the chat request: %v", err)
+		t.Fatalf("building the body: %v", err)
 	}
-	if request.ThreadID == nil || *request.ThreadID != "thread-1" {
-		t.Fatalf("thread id = %v, want the existing conversation", request.ThreadID)
+	var body map[string]any
+	if err := json.Unmarshal(payload, &body); err != nil {
+		t.Fatalf("decoding the body: %v", err)
+	}
+	if body["reasoning_effort"] != "high" {
+		t.Fatalf("reasoning_effort = %#v, want the declared effort", body["reasoning_effort"])
+	}
+
+	blank := "   "
+	payload, err = freebuffChatCompletionsBody(translated, "model", &blank)
+	if err != nil {
+		t.Fatalf("building the body: %v", err)
+	}
+	body = nil
+	if err := json.Unmarshal(payload, &body); err != nil {
+		t.Fatalf("decoding the body: %v", err)
+	}
+	if _, present := body["reasoning_effort"]; present {
+		t.Fatalf("reasoning_effort = %#v, want a blank effort omitted", body["reasoning_effort"])
 	}
 }
 
-// TestFreebuffChatRequestForRejectsAnEmptyConversation stops a request that
-// translated to nothing from being sent as an empty prompt.
-func TestFreebuffChatRequestForRejectsAnEmptyConversation(t *testing.T) {
+// TestFreebuffChatCompletionsBodyRejectsAnEmptyConversation stops a request
+// that translated to nothing from being sent as an empty prompt.
+func TestFreebuffChatCompletionsBodyRejectsAnEmptyConversation(t *testing.T) {
 	for _, translated := range [][]byte{
 		[]byte(`{"messages":[]}`),
-		[]byte(`{"messages":[{"role":"user","content":"   "}]}`),
+		[]byte(`{"messages":"not an array"}`),
 		[]byte(`not json`),
 	} {
-		if _, err := freebuffChatRequestFor(translated, "", "model", nil); err == nil {
+		if _, err := freebuffChatCompletionsBody(translated, "model", nil); err == nil {
 			t.Fatalf("a request with no usable content should be refused: %s", translated)
 		}
 	}
@@ -488,17 +475,22 @@ func TestFreebuffReasoningEffortFor(t *testing.T) {
 	}
 }
 
-// TestFreebuffCompletionIDIsStable keeps the same turn producing the same id, so
-// a caller cannot tell a retry from a different answer.
+// TestFreebuffCompletionIDIsStable keeps the same answer producing the same id,
+// so a caller cannot tell a retry from a different answer.
 func TestFreebuffCompletionIDIsStable(t *testing.T) {
-	first := freebuffCompletionID(&chatCompletion{threadID: "t", content: strings.Builder{}})
-	second := freebuffCompletionID(&chatCompletion{threadID: "t", content: strings.Builder{}})
+	build := func(content string) *chatCompletion {
+		completion := &chatCompletion{}
+		completion.content.WriteString(content)
+		return completion
+	}
+	first := freebuffCompletionID(build("Beijing"))
+	second := freebuffCompletionID(build("Beijing"))
 	if first != second {
 		t.Fatalf("identical turns produced different ids: %q and %q", first, second)
 	}
-	different := freebuffCompletionID(&chatCompletion{threadID: "t2", content: strings.Builder{}})
+	different := freebuffCompletionID(build("Shanghai"))
 	if different == first {
-		t.Fatal("different conversations produced the same id")
+		t.Fatal("different answers produced the same id")
 	}
 	if !strings.HasPrefix(first, "chatcmpl-freebuff-") {
 		t.Fatalf("id = %q, want the conventional prefix", first)
